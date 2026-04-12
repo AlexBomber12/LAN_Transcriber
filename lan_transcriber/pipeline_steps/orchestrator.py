@@ -3406,12 +3406,19 @@ async def run_pipeline(
             )
             noise_speakers = list(noise_summary.get("noise_speakers") or [])
         transcript_speaker_turns = speaker_turns
+        transcript_text = clean_text
         if noise_speakers and cfg.exclude_noise_speakers_from_transcript:
             transcript_speaker_turns = [
                 turn
                 for turn in speaker_turns
                 if str(turn.get("speaker") or "") not in noise_speakers
             ]
+            transcript_text = normalizer.dedup(
+                " ".join(
+                    str(turn.get("text") or "").strip()
+                    for turn in transcript_speaker_turns
+                ).strip()
+            )
         speaker_lines = _merge_similar(
             [
                 f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
@@ -3465,7 +3472,7 @@ async def run_pipeline(
             )
         serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in transcript_speaker_turns]
         speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in transcript_speaker_turns))
-        atomic_write_text(artifacts.transcript_txt_path, clean_text)
+        atomic_write_text(artifacts.transcript_txt_path, transcript_text)
         payload = _finalize_transcript_payload(
             _base_transcript_payload(
                 recording_id=artifacts.recording_id,
@@ -3479,7 +3486,7 @@ async def run_pipeline(
                 calendar_attendees=cal_attendees,
                 segments=language_analysis.segments,
                 speakers=speakers,
-                text=clean_text,
+                text=transcript_text,
             ),
             speaker_lines=speaker_lines,
             asr_execution=asr_execution,
@@ -3519,7 +3526,7 @@ async def run_pipeline(
                 "review_required": bool(language_analysis.review_required),
             },
         )
-        return TranscriptResult(summary=str(summary_payload.get("summary") or ""), body=clean_text, friendly=friendly, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=snippet_paths, segments=serialised_segments)
+        return TranscriptResult(summary=str(summary_payload.get("summary") or ""), body=transcript_text, friendly=friendly, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=snippet_paths, segments=serialised_segments)
     except Exception as exc:
         error_rate_total.inc()
         atomic_write_json(

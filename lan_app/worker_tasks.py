@@ -3536,6 +3536,7 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
 
     ctx.summary_payload = _load_summary_payload(ctx)
     transcript_speaker_turns = ctx.speaker_turns
+    transcript_text = ctx.clean_text
     if ctx.pipeline_settings.exclude_noise_speakers_from_transcript:
         diarization_metadata = _load_json_dict(
             ctx.artifacts.recording_artifacts.diarization_metadata_json_path
@@ -3549,6 +3550,12 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
                     for turn in ctx.speaker_turns
                     if str(turn.get("speaker") or "S1") not in noise_set
                 ]
+                transcript_text = normalizer.dedup(
+                    " ".join(
+                        str(turn.get("text") or "").strip()
+                        for turn in transcript_speaker_turns
+                    ).strip()
+                )
     speaker_lines = pipeline_orchestrator._merge_similar(
         [
             f"[{safe_float(turn.get('start')):.2f}-{safe_float(turn.get('end')):.2f}] **{aliases.get(str(turn.get('speaker') or 'S1'), str(turn.get('speaker') or 'S1'))}:** {str(turn.get('text') or '').strip()}"
@@ -3574,13 +3581,13 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
                     for turn in transcript_speaker_turns
                 }
             ),
-            text=ctx.clean_text,
+            text=transcript_text,
         ),
         speaker_lines=speaker_lines,
         asr_execution=ctx.asr_execution,
         review=ctx.language_payload.get("review") or {},
     )
-    atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, ctx.clean_text)
+    atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, transcript_text)
     atomic_write_json(ctx.artifacts.recording_artifacts.transcript_json_path, transcript_payload)
     atomic_write_json(ctx.artifacts.recording_artifacts.segments_json_path, ctx.diarization_segments)
     atomic_write_json(

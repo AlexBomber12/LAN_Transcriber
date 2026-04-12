@@ -3729,6 +3729,13 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
         )
     )
     assert metrics_payload["speaker_turns"] == len(persisted_turns)
+    transcript_txt = (
+        cfg.recordings_root / "rec-noise-filter" / "derived" / "transcript.txt"
+    ).read_text(encoding="utf-8")
+    assert "background noise hiss" not in transcript_txt
+    assert "hello team and thanks" in transcript_txt
+    assert transcript["text"] == transcript_txt
+    assert result.body == transcript_txt
 
 
 @pytest.mark.asyncio

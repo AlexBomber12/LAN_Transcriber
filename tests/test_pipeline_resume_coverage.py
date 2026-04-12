@@ -1244,8 +1244,18 @@ def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
     ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
         json.dumps(
             [
-                {"speaker": "SPEAKER_REAL", "start": 0.0, "end": 1.0, "text": "hello"},
-                {"speaker": "SPEAKER_NOISE", "start": 1.0, "end": 1.5, "text": "noise"},
+                {
+                    "speaker": "SPEAKER_REAL",
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "hello team this is the real speaker speaking now clearly",
+                },
+                {
+                    "speaker": "SPEAKER_NOISE",
+                    "start": 1.0,
+                    "end": 1.5,
+                    "text": "background noise hiss static hum buzz crackle",
+                },
             ]
         ),
         encoding="utf-8",
@@ -1300,6 +1310,12 @@ def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
         str(turn.get("speaker")) != "SPEAKER_NOISE" for turn in persisted_turns
     )
     assert any(str(turn.get("speaker")) == "SPEAKER_REAL" for turn in persisted_turns)
+    transcript_text = ctx.artifacts.recording_artifacts.transcript_txt_path.read_text(
+        encoding="utf-8"
+    )
+    assert "background noise hiss" not in transcript_text
+    assert "real speaker speaking" in transcript_text
+    assert transcript_payload["text"] == transcript_text
 
 
 def test_snippet_manifest_helpers_cover_edge_cases(tmp_path: Path) -> None:

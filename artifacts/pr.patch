@@ -1,30 +1,148 @@
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 8f1e3af..1161a16 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -3536,6 +3536,7 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
+ 
+     ctx.summary_payload = _load_summary_payload(ctx)
+     transcript_speaker_turns = ctx.speaker_turns
++    transcript_text = ctx.clean_text
+     if ctx.pipeline_settings.exclude_noise_speakers_from_transcript:
+         diarization_metadata = _load_json_dict(
+             ctx.artifacts.recording_artifacts.diarization_metadata_json_path
+@@ -3549,6 +3550,12 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
+                     for turn in ctx.speaker_turns
+                     if str(turn.get("speaker") or "S1") not in noise_set
+                 ]
++                transcript_text = normalizer.dedup(
++                    " ".join(
++                        str(turn.get("text") or "").strip()
++                        for turn in transcript_speaker_turns
++                    ).strip()
++                )
+     speaker_lines = pipeline_orchestrator._merge_similar(
+         [
+             f"[{safe_float(turn.get('start')):.2f}-{safe_float(turn.get('end')):.2f}] **{aliases.get(str(turn.get('speaker') or 'S1'), str(turn.get('speaker') or 'S1'))}:** {str(turn.get('text') or '').strip()}"
+@@ -3574,13 +3581,13 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
+                     for turn in transcript_speaker_turns
+                 }
+             ),
+-            text=ctx.clean_text,
++            text=transcript_text,
+         ),
+         speaker_lines=speaker_lines,
+         asr_execution=ctx.asr_execution,
+         review=ctx.language_payload.get("review") or {},
+     )
+-    atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, ctx.clean_text)
++    atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, transcript_text)
+     atomic_write_json(ctx.artifacts.recording_artifacts.transcript_json_path, transcript_payload)
+     atomic_write_json(ctx.artifacts.recording_artifacts.segments_json_path, ctx.diarization_segments)
+     atomic_write_json(
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index a646768..9c927ed 100644
+index 9c927ed..4219756 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -3508,7 +3508,7 @@ async def run_pipeline(
-                 "language": language_info,
-                 "asr_segments": len(language_analysis.segments),
-                 "diar_segments": len(diar_segments),
--                "speaker_turns": len(speaker_turns),
-+                "speaker_turns": len(transcript_speaker_turns),
-                 "snippets": len(snippet_paths),
-                 "multilingual_asr": {
-                     "used_multilingual_path": bool(
+@@ -3406,12 +3406,19 @@ async def run_pipeline(
+             )
+             noise_speakers = list(noise_summary.get("noise_speakers") or [])
+         transcript_speaker_turns = speaker_turns
++        transcript_text = clean_text
+         if noise_speakers and cfg.exclude_noise_speakers_from_transcript:
+             transcript_speaker_turns = [
+                 turn
+                 for turn in speaker_turns
+                 if str(turn.get("speaker") or "") not in noise_speakers
+             ]
++            transcript_text = normalizer.dedup(
++                " ".join(
++                    str(turn.get("text") or "").strip()
++                    for turn in transcript_speaker_turns
++                ).strip()
++            )
+         speaker_lines = _merge_similar(
+             [
+                 f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
+@@ -3465,7 +3472,7 @@ async def run_pipeline(
+             )
+         serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in transcript_speaker_turns]
+         speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in transcript_speaker_turns))
+-        atomic_write_text(artifacts.transcript_txt_path, clean_text)
++        atomic_write_text(artifacts.transcript_txt_path, transcript_text)
+         payload = _finalize_transcript_payload(
+             _base_transcript_payload(
+                 recording_id=artifacts.recording_id,
+@@ -3479,7 +3486,7 @@ async def run_pipeline(
+                 calendar_attendees=cal_attendees,
+                 segments=language_analysis.segments,
+                 speakers=speakers,
+-                text=clean_text,
++                text=transcript_text,
+             ),
+             speaker_lines=speaker_lines,
+             asr_execution=asr_execution,
+@@ -3519,7 +3526,7 @@ async def run_pipeline(
+                 "review_required": bool(language_analysis.review_required),
+             },
+         )
+-        return TranscriptResult(summary=str(summary_payload.get("summary") or ""), body=clean_text, friendly=friendly, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=snippet_paths, segments=serialised_segments)
++        return TranscriptResult(summary=str(summary_payload.get("summary") or ""), body=transcript_text, friendly=friendly, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=snippet_paths, segments=serialised_segments)
+     except Exception as exc:
+         error_rate_total.inc()
+         atomic_write_json(
 diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index 1a2b694..a101865 100644
+index a101865..97628c2 100644
 --- a/tests/test_cov_lan_transcriber_extra_pipeline.py
 +++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -3723,6 +3723,12 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
-     assert any(str(turn.get("speaker")) == "S1" for turn in persisted_turns)
-     assert all(seg.speaker != "S2" for seg in result.segments)
-     assert any(seg.speaker == "S1" for seg in result.segments)
-+    metrics_payload = json.loads(
-+        (cfg.recordings_root / "rec-noise-filter" / "derived" / "metrics.json").read_text(
-+            encoding="utf-8"
-+        )
-+    )
-+    assert metrics_payload["speaker_turns"] == len(persisted_turns)
+@@ -3729,6 +3729,13 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
+         )
+     )
+     assert metrics_payload["speaker_turns"] == len(persisted_turns)
++    transcript_txt = (
++        cfg.recordings_root / "rec-noise-filter" / "derived" / "transcript.txt"
++    ).read_text(encoding="utf-8")
++    assert "background noise hiss" not in transcript_txt
++    assert "hello team and thanks" in transcript_txt
++    assert transcript["text"] == transcript_txt
++    assert result.body == transcript_txt
  
  
  @pytest.mark.asyncio
+diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
+index 2122b32..807c4ce 100644
+--- a/tests/test_pipeline_resume_coverage.py
++++ b/tests/test_pipeline_resume_coverage.py
+@@ -1244,8 +1244,18 @@ def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
+     ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+         json.dumps(
+             [
+-                {"speaker": "SPEAKER_REAL", "start": 0.0, "end": 1.0, "text": "hello"},
+-                {"speaker": "SPEAKER_NOISE", "start": 1.0, "end": 1.5, "text": "noise"},
++                {
++                    "speaker": "SPEAKER_REAL",
++                    "start": 0.0,
++                    "end": 1.0,
++                    "text": "hello team this is the real speaker speaking now clearly",
++                },
++                {
++                    "speaker": "SPEAKER_NOISE",
++                    "start": 1.0,
++                    "end": 1.5,
++                    "text": "background noise hiss static hum buzz crackle",
++                },
+             ]
+         ),
+         encoding="utf-8",
+@@ -1300,6 +1310,12 @@ def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
+         str(turn.get("speaker")) != "SPEAKER_NOISE" for turn in persisted_turns
+     )
+     assert any(str(turn.get("speaker")) == "SPEAKER_REAL" for turn in persisted_turns)
++    transcript_text = ctx.artifacts.recording_artifacts.transcript_txt_path.read_text(
++        encoding="utf-8"
++    )
++    assert "background noise hiss" not in transcript_text
++    assert "real speaker speaking" in transcript_text
++    assert transcript_payload["text"] == transcript_text
+ 
+ 
+ def test_snippet_manifest_helpers_cover_edge_cases(tmp_path: Path) -> None:
