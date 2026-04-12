@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from lan_transcriber.artifacts import atomic_write_json
 from lan_transcriber.pipeline import Settings as PipelineSettings
+from lan_transcriber.pipeline_steps.noise_detection import apply_noise_flags_to_manifest
 from lan_transcriber.pipeline_steps.snippets import (
     SnippetExportRequest,
     export_speaker_snippets,
@@ -517,6 +518,12 @@ def _build_staged_snippet_outputs(
             )
         )
         manifest_path = staged_snippets_dir.parent / "snippets_manifest.json"
+        if pipeline_settings.noise_detection_enabled:
+            apply_noise_flags_to_manifest(
+                manifest_path,
+                snippets_dir=staged_snippets_dir,
+                threshold=pipeline_settings.noise_speech_ratio_threshold,
+            )
         manifest = _load_json_dict(manifest_path)
         counts = snippet_manifest_counts(manifest)
         manifest_status = "ok"

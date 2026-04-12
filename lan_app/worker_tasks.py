@@ -54,6 +54,10 @@ from lan_transcriber.pipeline_steps.language import (
 )
 from lan_transcriber.pipeline_steps.multilingual_asr import run_language_aware_asr
 from lan_transcriber.pipeline_steps import summary_builder as pipeline_summary_builder
+from lan_transcriber.pipeline_steps.noise_detection import (
+    apply_noise_flags_to_manifest,
+    update_diarization_metadata_with_noise,
+)
 from lan_transcriber.pipeline_steps.snippets import (
     SnippetExportRequest,
     export_speaker_snippets,
@@ -1896,6 +1900,9 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
         speaker_turn_short_merge_gap_sec=settings.speaker_turn_short_merge_gap_sec,
         speaker_turn_min_words=settings.speaker_turn_min_words,
         vad_method=settings.vad_method,
+        noise_detection_enabled=settings.noise_detection_enabled,
+        noise_speech_ratio_threshold=settings.noise_speech_ratio_threshold,
+        exclude_noise_speakers_from_transcript=settings.exclude_noise_speakers_from_transcript,
     )
 
 
@@ -3232,6 +3239,16 @@ def _stage_snippet_export(ctx: _PipelineExecutionContext) -> _StageResult:
         return _StageResult(status="completed", metadata=metadata)
 
     manifest_path = _snippets_manifest_path(ctx)
+    if ctx.pipeline_settings.noise_detection_enabled:
+        noise_summary = apply_noise_flags_to_manifest(
+            manifest_path,
+            snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
+            threshold=ctx.pipeline_settings.noise_speech_ratio_threshold,
+        )
+        update_diarization_metadata_with_noise(
+            ctx.artifacts.recording_artifacts.diarization_metadata_json_path,
+            summary=noise_summary,
+        )
     manifest = _load_json_dict(manifest_path)
     counts = _snippet_manifest_counts(manifest)
     manifest_status = "ok"
@@ -3245,6 +3262,10 @@ def _stage_snippet_export(ctx: _PipelineExecutionContext) -> _StageResult:
         degraded_diarization=degraded_diarization,
     )
     metadata = _snippet_export_result_metadata(manifest)
+    if ctx.pipeline_settings.noise_detection_enabled:
+        noise_speakers = manifest.get("noise_speakers")
+        if isinstance(noise_speakers, list):
+            metadata["noise_speakers"] = list(noise_speakers)
     _append_step_log(
         ctx.log_path,
         (
@@ -3514,10 +3535,24 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
         )
 
     ctx.summary_payload = _load_summary_payload(ctx)
+    transcript_speaker_turns = ctx.speaker_turns
+    if ctx.pipeline_settings.exclude_noise_speakers_from_transcript:
+        diarization_metadata = _load_json_dict(
+            ctx.artifacts.recording_artifacts.diarization_metadata_json_path
+        )
+        noise_raw = diarization_metadata.get("noise_speakers")
+        if isinstance(noise_raw, list):
+            noise_set = {str(item) for item in noise_raw}
+            if noise_set:
+                transcript_speaker_turns = [
+                    turn
+                    for turn in ctx.speaker_turns
+                    if str(turn.get("speaker") or "S1") not in noise_set
+                ]
     speaker_lines = pipeline_orchestrator._merge_similar(
         [
             f"[{safe_float(turn.get('start')):.2f}-{safe_float(turn.get('end')):.2f}] **{aliases.get(str(turn.get('speaker') or 'S1'), str(turn.get('speaker') or 'S1'))}:** {str(turn.get('text') or '').strip()}"
-            for turn in ctx.speaker_turns
+            for turn in transcript_speaker_turns
         ],
         ctx.pipeline_settings.merge_similar,
     )

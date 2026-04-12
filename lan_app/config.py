@@ -17,6 +17,9 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
     DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
     DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
 )
+from lan_transcriber.pipeline_steps.noise_detection import (
+    DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD,
+)
 from lan_transcriber.pipeline_steps.speaker_merge import (
     DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
     DEFAULT_SPEAKER_MERGE_NO_OVERLAP_SIMILARITY_THRESHOLD,
@@ -410,6 +413,29 @@ class AppSettings(BaseSettings):
         ),
     )
     vad_method: Literal["silero", "pyannote"] = "silero"
+    noise_detection_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "LAN_NOISE_DETECTION_ENABLED",
+            "NOISE_DETECTION_ENABLED",
+        ),
+    )
+    noise_speech_ratio_threshold: float = Field(
+        default=DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices(
+            "LAN_NOISE_SPEECH_RATIO_THRESHOLD",
+            "NOISE_SPEECH_RATIO_THRESHOLD",
+        ),
+    )
+    exclude_noise_speakers_from_transcript: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "LAN_EXCLUDE_NOISE_SPEAKERS_FROM_TRANSCRIPT",
+            "EXCLUDE_NOISE_SPEAKERS_FROM_TRANSCRIPT",
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_runtime_environment(self) -> "AppSettings":

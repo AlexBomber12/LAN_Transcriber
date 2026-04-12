@@ -751,6 +751,6 @@ Queue (in order)
 - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
 
 150) PR-NOISE-SPEAKER-FILTER-01: Detect and flag noise-only diarization speakers based on snippet VAD analysis
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-NOISE-SPEAKER-FILTER-01.md
 - Depends on: PR-ASR-FORCE-TRANSCRIBE-01

@@ -767,6 +767,39 @@ def test_replace_staged_outputs_failure_without_existing_targets(
     assert not (cfg.recordings_root / "rec-rollback-empty-1" / "derived" / "snippets").exists()
 
 
+def test_repair_recording_snippets_skips_noise_detection_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-repair-no-noise",
+        source="upload",
+        source_filename="repair-no-noise.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_repair_artifacts(cfg, "rec-repair-no-noise")
+    monkeypatch.setenv("LAN_NOISE_DETECTION_ENABLED", "false")
+    monkeypatch.setattr(
+        snippet_repair,
+        "apply_noise_flags_to_manifest",
+        lambda *_a, **_k: pytest.fail("noise detection should be disabled"),
+    )
+
+    snippet_repair.repair_recording_snippets(
+        "rec-repair-no-noise",
+        settings=cfg,
+        origin="pytest",
+    )
+    manifest = json.loads(
+        (cfg.recordings_root / "rec-repair-no-noise" / "derived" / "snippets_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "noise_speakers" not in manifest
+
+
 def test_repair_recording_snippets_is_idempotent(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     init_db(cfg)

@@ -1002,11 +1002,295 @@ def test_stage_snippet_export_writes_manifest_metadata_and_counts(
         "speaker_count": 1,
         "warning_count": 1,
         "degraded_diarization": False,
+        "noise_speakers": [],
     }
     manifest = json.loads(worker_tasks._snippets_manifest_path(ctx).read_text(encoding="utf-8"))  # noqa: SLF001
     assert manifest["manifest_status"] == "partial"
     assert manifest["accepted_snippets"] == 1
     assert manifest["warning_count"] == 1
+    assert manifest["noise_speakers"] == []
+
+
+def test_stage_snippet_export_skips_metadata_noise_when_manifest_value_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-snippet-bad-noise", create_raw_audio=True)
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
+    ctx.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_segments_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+        json.dumps({"degraded": False}),
+        encoding="utf-8",
+    )
+
+    def _fake_export(request):
+        request.snippets_dir.mkdir(parents=True, exist_ok=True)
+        (request.snippets_dir.parent / "snippets_manifest.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "speakers": {
+                        "S1": [{"status": "accepted", "relative_path": "S1/1.wav"}],
+                    },
+                    "noise_speakers": "not-a-list",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return []
+
+    monkeypatch.setattr(worker_tasks, "export_speaker_snippets", _fake_export)
+    monkeypatch.setattr(
+        worker_tasks,
+        "apply_noise_flags_to_manifest",
+        lambda *_a, **_k: {"noise_speakers": [], "speaker_metrics": {}, "threshold": 0.3},
+    )
+
+    def _no_op_metadata(*_a, **_k):
+        # Re-corrupt the manifest after apply_noise_flags_to_manifest so the
+        # finalize step preserves a non-list noise_speakers entry. This exercises
+        # the defensive isinstance guard in _stage_snippet_export.
+        manifest_path = worker_tasks._snippets_manifest_path(ctx)  # noqa: SLF001
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["noise_speakers"] = "still-not-a-list"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(
+        worker_tasks, "update_diarization_metadata_with_noise", _no_op_metadata
+    )
+
+    result = worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
+    assert "noise_speakers" not in result.metadata
+
+
+def test_stage_snippet_export_skips_noise_detection_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-snippet-no-noise", create_raw_audio=True)
+    ctx.pipeline_settings.noise_detection_enabled = False
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
+    ctx.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_segments_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+        json.dumps({"degraded": False}),
+        encoding="utf-8",
+    )
+
+    def _fake_export(request):
+        request.snippets_dir.mkdir(parents=True, exist_ok=True)
+        (request.snippets_dir.parent / "snippets_manifest.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "speakers": {
+                        "S1": [
+                            {"status": "accepted", "relative_path": "S1/1.wav"},
+                        ]
+                    },
+                    "noise_speakers": "not-a-list",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return []
+
+    monkeypatch.setattr(worker_tasks, "export_speaker_snippets", _fake_export)
+    monkeypatch.setattr(
+        worker_tasks,
+        "apply_noise_flags_to_manifest",
+        lambda *_a, **_k: pytest.fail("noise detection should be disabled"),
+    )
+
+    result = worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
+    assert "noise_speakers" not in result.metadata
+
+
+def test_stage_export_artifacts_exclude_noise_handles_missing_or_empty_noise_list(
+    tmp_path: Path,
+) -> None:
+    cfg, ctx = _new_ctx(
+        tmp_path, "rec-export-exclude-no-noise", create_raw_audio=True
+    )
+    ctx.pipeline_settings.exclude_noise_speakers_from_transcript = True
+    ctx.pipeline_settings.llm_model = "stub-model"
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
+    ctx.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
+        encoding="utf-8",
+    )
+    # diarization_metadata: noise_speakers is None (not a list) for this branch.
+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+        json.dumps({"degraded": False, "noise_speakers": None}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_segments_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps(
+            [{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello team"}]
+        ),
+        encoding="utf-8",
+    )
+    snippets_dir = ctx.artifacts.recording_artifacts.snippets_dir
+    snippets_dir.mkdir(parents=True, exist_ok=True)
+    (snippets_dir.parent / "snippets_manifest.json").write_text(
+        json.dumps({"version": 1, "speakers": {}, "manifest_status": "ok"}),
+        encoding="utf-8",
+    )
+    derived = ctx.artifacts.derived_dir
+    (derived / "language_analysis.json").write_text(
+        json.dumps(
+            {
+                "language": {"detected": "en", "confidence": 0.9},
+                "dominant_language": "en",
+                "language_distribution": {"en": 1.0},
+                "language_spans": [],
+                "segments": [
+                    {
+                        "text": "hello team this is the real speaker speaking now",
+                        "start": 0.0,
+                        "end": 1.0,
+                    }
+                ],
+                "target_summary_language": "en",
+                "review": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "asr_execution.json").write_text(
+        json.dumps({"used_multilingual_path": False, "selected_mode": "single_language"}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.summary_json_path.write_text(
+        json.dumps({"status": "ok", "summary": "ok"}),
+        encoding="utf-8",
+    )
+
+    result_none = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
+    assert result_none.status == "completed"
+
+    # Now re-run with empty list -> should also keep all turns
+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+        json.dumps({"degraded": False, "noise_speakers": []}),
+        encoding="utf-8",
+    )
+    result_empty = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
+    assert result_empty.status == "completed"
+    transcript_payload = json.loads(
+        ctx.artifacts.recording_artifacts.transcript_json_path.read_text(encoding="utf-8")
+    )
+    speaker_lines = transcript_payload.get("speaker_lines") or []
+    assert any("S1" in line for line in speaker_lines)
+
+
+def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, ctx = _new_ctx(
+        tmp_path, "rec-export-noise-filter", create_raw_audio=True
+    )
+    ctx.pipeline_settings.exclude_noise_speakers_from_transcript = True
+    ctx.pipeline_settings.llm_model = "stub-model"
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
+    ctx.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+        json.dumps(
+            {
+                "degraded": False,
+                "noise_speakers": ["SPEAKER_NOISE"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_segments_json_path.write_text(
+        json.dumps(
+            [
+                {"speaker": "SPEAKER_REAL", "start": 0.0, "end": 1.0},
+                {"speaker": "SPEAKER_NOISE", "start": 1.0, "end": 1.5},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps(
+            [
+                {"speaker": "SPEAKER_REAL", "start": 0.0, "end": 1.0, "text": "hello"},
+                {"speaker": "SPEAKER_NOISE", "start": 1.0, "end": 1.5, "text": "noise"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    snippets_dir = ctx.artifacts.recording_artifacts.snippets_dir
+    snippets_dir.mkdir(parents=True, exist_ok=True)
+    (snippets_dir.parent / "snippets_manifest.json").write_text(
+        json.dumps({"version": 1, "speakers": {}, "manifest_status": "ok"}),
+        encoding="utf-8",
+    )
+    derived = ctx.artifacts.derived_dir
+    (derived / "language_analysis.json").write_text(
+        json.dumps(
+            {
+                "language": {"detected": "en", "confidence": 0.9},
+                "dominant_language": "en",
+                "language_distribution": {"en": 1.0},
+                "language_spans": [],
+                "segments": [
+                    {"text": "hello team this is the real speaker speaking now", "start": 0.0, "end": 1.0},
+                    {"text": "background noise hiss static hum", "start": 1.0, "end": 1.5},
+                ],
+                "target_summary_language": "en",
+                "review": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "asr_execution.json").write_text(
+        json.dumps({"used_multilingual_path": False, "selected_mode": "single_language"}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.summary_json_path.write_text(
+        json.dumps({"status": "ok", "summary": "ok"}),
+        encoding="utf-8",
+    )
+
+    result = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
+    assert result.status == "completed"
+    transcript_payload = json.loads(
+        ctx.artifacts.recording_artifacts.transcript_json_path.read_text(encoding="utf-8")
+    )
+    speaker_lines = transcript_payload.get("speaker_lines") or []
+    assert any("SPEAKER_REAL" in line for line in speaker_lines)
+    assert all("SPEAKER_NOISE" not in line for line in speaker_lines)
 
 
 def test_snippet_manifest_helpers_cover_edge_cases(tmp_path: Path) -> None:

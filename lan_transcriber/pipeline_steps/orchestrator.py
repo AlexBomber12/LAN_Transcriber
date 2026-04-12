@@ -76,6 +76,11 @@ from .diarization_quality import (
     filter_flickering_speakers,
     smooth_speaker_turns,
 )
+from .noise_detection import (
+    DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD,
+    apply_noise_flags_to_manifest,
+    update_diarization_metadata_with_noise,
+)
 from .snippets import SnippetExportRequest, export_speaker_snippets, write_empty_snippets_manifest
 from .speaker_merge import (
     DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
@@ -511,6 +516,32 @@ class Settings(BaseSettings):
             "speaker_merge_overlap_ratio_threshold",
             "SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD",
             "LAN_SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD",
+        ),
+    )
+    noise_detection_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "noise_detection_enabled",
+            "NOISE_DETECTION_ENABLED",
+            "LAN_NOISE_DETECTION_ENABLED",
+        ),
+    )
+    noise_speech_ratio_threshold: float = Field(
+        default=DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices(
+            "noise_speech_ratio_threshold",
+            "NOISE_SPEECH_RATIO_THRESHOLD",
+            "LAN_NOISE_SPEECH_RATIO_THRESHOLD",
+        ),
+    )
+    exclude_noise_speakers_from_transcript: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "exclude_noise_speakers_from_transcript",
+            "EXCLUDE_NOISE_SPEAKERS_FROM_TRANSCRIPT",
+            "LAN_EXCLUDE_NOISE_SPEAKERS_FROM_TRANSCRIPT",
         ),
     )
 
@@ -3362,10 +3393,29 @@ async def run_pipeline(
                 max_snippets_per_speaker=cfg.snippet_max_per_speaker,
             )
         )
+        noise_speakers: list[str] = []
+        if cfg.noise_detection_enabled:
+            noise_summary = apply_noise_flags_to_manifest(
+                artifacts.snippets_dir.parent / "snippets_manifest.json",
+                snippets_dir=artifacts.snippets_dir,
+                threshold=cfg.noise_speech_ratio_threshold,
+            )
+            update_diarization_metadata_with_noise(
+                artifacts.diarization_metadata_json_path,
+                summary=noise_summary,
+            )
+            noise_speakers = list(noise_summary.get("noise_speakers") or [])
+        transcript_speaker_turns = speaker_turns
+        if noise_speakers and cfg.exclude_noise_speakers_from_transcript:
+            transcript_speaker_turns = [
+                turn
+                for turn in speaker_turns
+                if str(turn.get("speaker") or "") not in noise_speakers
+            ]
         speaker_lines = _merge_similar(
             [
                 f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
-                for turn in speaker_turns
+                for turn in transcript_speaker_turns
             ],
             cfg.merge_similar,
         )

@@ -1,37 +1,1358 @@
-diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index 2d7c1b6..620ca4b 100644
---- a/lan_app/templates/base.html
-+++ b/lan_app/templates/base.html
-@@ -91,7 +91,6 @@ a { color: inherit; }
-       <a href="/voices" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='voices' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Voices</a>
-       <a href="/calendars" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='calendars' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Calendars</a>
-       <a href="/projects" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='projects' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Projects</a>
--      <a href="/queue" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='queue' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Queue</a>
-     </nav>
-   </div>
- </header>
+diff --git a/.env.example b/.env.example
+index 7aa7956..4f24dd7 100644
+--- a/.env.example
++++ b/.env.example
+@@ -35,6 +35,12 @@ LAN_REDIS_URL=redis://redis:6379/0
+ LAN_RQ_QUEUE_NAME=lan-transcriber
+ LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization-3.1
+ LAN_VAD_METHOD=silero
++# Flag diarization speakers whose snippets carry no speech as likely noise.
++LAN_NOISE_DETECTION_ENABLED=true
++# Speech-frame ratio below which a speaker's snippets are flagged as noise (0.0-1.0).
++LAN_NOISE_SPEECH_RATIO_THRESHOLD=0.3
++# When true, drop noise-flagged speakers from transcript exports (default false).
++LAN_EXCLUDE_NOISE_SPEAKERS_FROM_TRANSCRIPT=false
+ LAN_ASR_MULTILINGUAL_MODE=auto
+ # Plaud-style filename timestamps are interpreted in this timezone before UTC storage.
+ # Existing legacy upload rows are backfilled automatically after upgrade.
+diff --git a/lan_app/config.py b/lan_app/config.py
+index 6b271b5..841b793 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -17,6 +17,9 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
+     DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
+     DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
+ )
++from lan_transcriber.pipeline_steps.noise_detection import (
++    DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD,
++)
+ from lan_transcriber.pipeline_steps.speaker_merge import (
+     DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
+     DEFAULT_SPEAKER_MERGE_NO_OVERLAP_SIMILARITY_THRESHOLD,
+@@ -410,6 +413,29 @@ class AppSettings(BaseSettings):
+         ),
+     )
+     vad_method: Literal["silero", "pyannote"] = "silero"
++    noise_detection_enabled: bool = Field(
++        default=True,
++        validation_alias=AliasChoices(
++            "LAN_NOISE_DETECTION_ENABLED",
++            "NOISE_DETECTION_ENABLED",
++        ),
++    )
++    noise_speech_ratio_threshold: float = Field(
++        default=DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD,
++        ge=0.0,
++        le=1.0,
++        validation_alias=AliasChoices(
++            "LAN_NOISE_SPEECH_RATIO_THRESHOLD",
++            "NOISE_SPEECH_RATIO_THRESHOLD",
++        ),
++    )
++    exclude_noise_speakers_from_transcript: bool = Field(
++        default=False,
++        validation_alias=AliasChoices(
++            "LAN_EXCLUDE_NOISE_SPEAKERS_FROM_TRANSCRIPT",
++            "EXCLUDE_NOISE_SPEAKERS_FROM_TRANSCRIPT",
++        ),
++    )
+ 
+     @model_validator(mode="after")
+     def validate_runtime_environment(self) -> "AppSettings":
+diff --git a/lan_app/snippet_repair.py b/lan_app/snippet_repair.py
+index d0e3ee4..0d4dfa9 100644
+--- a/lan_app/snippet_repair.py
++++ b/lan_app/snippet_repair.py
+@@ -12,6 +12,7 @@ from uuid import uuid4
+ 
+ from lan_transcriber.artifacts import atomic_write_json
+ from lan_transcriber.pipeline import Settings as PipelineSettings
++from lan_transcriber.pipeline_steps.noise_detection import apply_noise_flags_to_manifest
+ from lan_transcriber.pipeline_steps.snippets import (
+     SnippetExportRequest,
+     export_speaker_snippets,
+@@ -517,6 +518,12 @@ def _build_staged_snippet_outputs(
+             )
+         )
+         manifest_path = staged_snippets_dir.parent / "snippets_manifest.json"
++        if pipeline_settings.noise_detection_enabled:
++            apply_noise_flags_to_manifest(
++                manifest_path,
++                snippets_dir=staged_snippets_dir,
++                threshold=pipeline_settings.noise_speech_ratio_threshold,
++            )
+         manifest = _load_json_dict(manifest_path)
+         counts = snippet_manifest_counts(manifest)
+         manifest_status = "ok"
+diff --git a/lan_app/templates/partials/speaker_review_cards.html b/lan_app/templates/partials/speaker_review_cards.html
+index abf3edc..21963f7 100644
+--- a/lan_app/templates/partials/speaker_review_cards.html
++++ b/lan_app/templates/partials/speaker_review_cards.html
+@@ -28,6 +28,9 @@
+       </div>
+       <div class="flex items-center gap-2">
+         <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold border {{ status_badge_classes((row.state_badge_class or '')[2:]) }}">{{ row.state_badge_label }}</span>
++        {% if row.noise_suspected %}
++        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-200 text-slate-700 border border-slate-300" title="No speech detected in snippet samples">Likely noise</span>
++        {% endif %}
+         {% if row.trusted_sample_state %}
+         <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-green-100 text-green-800 border border-green-200">{{ row.trusted_sample_state.badge_label }}</span>
+         {% endif %}
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index a831b86..e9a46d6 100644
+index e9a46d6..c28f55e 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -6762,6 +6762,7 @@ async def ui_voice_sample_audio(sample_id: int) -> Any:
- # ---------------------------------------------------------------------------
+@@ -2333,6 +2333,11 @@ def _speaker_snippet_context(
+     no_clean_snippet_message = (
+         None if clean_snippets else _no_clean_snippet_message(entries)
+     )
++    noise_speakers_raw = manifest.get("noise_speakers") if isinstance(manifest, dict) else None
++    noise_suspected = (
++        isinstance(noise_speakers_raw, list)
++        and speaker_label in {str(item) for item in noise_speakers_raw}
++    )
+     return {
+         "clean_snippets": clean_snippets,
+         "snippet_warnings": _snippet_warning_messages(entries),
+@@ -2346,6 +2351,7 @@ def _speaker_snippet_context(
+             clean_snippets=clean_snippets,
+             no_clean_snippet_message=no_clean_snippet_message,
+         ),
++        "noise_suspected": bool(noise_suspected),
+     }
  
  
-+# Hidden debug page, not linked in nav.
- @ui_router.get("/queue", response_class=HTMLResponse)
- async def ui_queue(
-     request: Request,
+@@ -2831,6 +2837,7 @@ def _speakers_tab_context(
+                 "snippet_warnings": snippet_context["snippet_warnings"],
+                 "no_clean_snippet_message": snippet_context["no_clean_snippet_message"],
+                 "snippet_ui_state": snippet_context["snippet_ui_state"],
++                "noise_suspected": bool(snippet_context.get("noise_suspected")),
+                 "trusted_sample_state": _trusted_sample_state(
+                     trusted_samples_by_speaker.get(speaker, [])
+                 ),
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index b479cd4..0c6a249 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -54,6 +54,10 @@ from lan_transcriber.pipeline_steps.language import (
+ )
+ from lan_transcriber.pipeline_steps.multilingual_asr import run_language_aware_asr
+ from lan_transcriber.pipeline_steps import summary_builder as pipeline_summary_builder
++from lan_transcriber.pipeline_steps.noise_detection import (
++    apply_noise_flags_to_manifest,
++    update_diarization_metadata_with_noise,
++)
+ from lan_transcriber.pipeline_steps.snippets import (
+     SnippetExportRequest,
+     export_speaker_snippets,
+@@ -1896,6 +1900,9 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
+         speaker_turn_short_merge_gap_sec=settings.speaker_turn_short_merge_gap_sec,
+         speaker_turn_min_words=settings.speaker_turn_min_words,
+         vad_method=settings.vad_method,
++        noise_detection_enabled=settings.noise_detection_enabled,
++        noise_speech_ratio_threshold=settings.noise_speech_ratio_threshold,
++        exclude_noise_speakers_from_transcript=settings.exclude_noise_speakers_from_transcript,
+     )
+ 
+ 
+@@ -3232,6 +3239,16 @@ def _stage_snippet_export(ctx: _PipelineExecutionContext) -> _StageResult:
+         return _StageResult(status="completed", metadata=metadata)
+ 
+     manifest_path = _snippets_manifest_path(ctx)
++    if ctx.pipeline_settings.noise_detection_enabled:
++        noise_summary = apply_noise_flags_to_manifest(
++            manifest_path,
++            snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
++            threshold=ctx.pipeline_settings.noise_speech_ratio_threshold,
++        )
++        update_diarization_metadata_with_noise(
++            ctx.artifacts.recording_artifacts.diarization_metadata_json_path,
++            summary=noise_summary,
++        )
+     manifest = _load_json_dict(manifest_path)
+     counts = _snippet_manifest_counts(manifest)
+     manifest_status = "ok"
+@@ -3245,6 +3262,10 @@ def _stage_snippet_export(ctx: _PipelineExecutionContext) -> _StageResult:
+         degraded_diarization=degraded_diarization,
+     )
+     metadata = _snippet_export_result_metadata(manifest)
++    if ctx.pipeline_settings.noise_detection_enabled:
++        noise_speakers = manifest.get("noise_speakers")
++        if isinstance(noise_speakers, list):
++            metadata["noise_speakers"] = list(noise_speakers)
+     _append_step_log(
+         ctx.log_path,
+         (
+@@ -3514,10 +3535,24 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
+         )
+ 
+     ctx.summary_payload = _load_summary_payload(ctx)
++    transcript_speaker_turns = ctx.speaker_turns
++    if ctx.pipeline_settings.exclude_noise_speakers_from_transcript:
++        diarization_metadata = _load_json_dict(
++            ctx.artifacts.recording_artifacts.diarization_metadata_json_path
++        )
++        noise_raw = diarization_metadata.get("noise_speakers")
++        if isinstance(noise_raw, list):
++            noise_set = {str(item) for item in noise_raw}
++            if noise_set:
++                transcript_speaker_turns = [
++                    turn
++                    for turn in ctx.speaker_turns
++                    if str(turn.get("speaker") or "S1") not in noise_set
++                ]
+     speaker_lines = pipeline_orchestrator._merge_similar(
+         [
+             f"[{safe_float(turn.get('start')):.2f}-{safe_float(turn.get('end')):.2f}] **{aliases.get(str(turn.get('speaker') or 'S1'), str(turn.get('speaker') or 'S1'))}:** {str(turn.get('text') or '').strip()}"
+-            for turn in ctx.speaker_turns
++            for turn in transcript_speaker_turns
+         ],
+         ctx.pipeline_settings.merge_similar,
+     )
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index 36cb4cd..7a85ed0 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -76,6 +76,11 @@ from .diarization_quality import (
+     filter_flickering_speakers,
+     smooth_speaker_turns,
+ )
++from .noise_detection import (
++    DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD,
++    apply_noise_flags_to_manifest,
++    update_diarization_metadata_with_noise,
++)
+ from .snippets import SnippetExportRequest, export_speaker_snippets, write_empty_snippets_manifest
+ from .speaker_merge import (
+     DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
+@@ -513,6 +518,32 @@ class Settings(BaseSettings):
+             "LAN_SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD",
+         ),
+     )
++    noise_detection_enabled: bool = Field(
++        default=True,
++        validation_alias=AliasChoices(
++            "noise_detection_enabled",
++            "NOISE_DETECTION_ENABLED",
++            "LAN_NOISE_DETECTION_ENABLED",
++        ),
++    )
++    noise_speech_ratio_threshold: float = Field(
++        default=DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD,
++        ge=0.0,
++        le=1.0,
++        validation_alias=AliasChoices(
++            "noise_speech_ratio_threshold",
++            "NOISE_SPEECH_RATIO_THRESHOLD",
++            "LAN_NOISE_SPEECH_RATIO_THRESHOLD",
++        ),
++    )
++    exclude_noise_speakers_from_transcript: bool = Field(
++        default=False,
++        validation_alias=AliasChoices(
++            "exclude_noise_speakers_from_transcript",
++            "EXCLUDE_NOISE_SPEAKERS_FROM_TRANSCRIPT",
++            "LAN_EXCLUDE_NOISE_SPEAKERS_FROM_TRANSCRIPT",
++        ),
++    )
+ 
+     class Config:
+         env_prefix = "LAN_"
+@@ -3362,10 +3393,29 @@ async def run_pipeline(
+                 max_snippets_per_speaker=cfg.snippet_max_per_speaker,
+             )
+         )
++        noise_speakers: list[str] = []
++        if cfg.noise_detection_enabled:
++            noise_summary = apply_noise_flags_to_manifest(
++                artifacts.snippets_dir.parent / "snippets_manifest.json",
++                snippets_dir=artifacts.snippets_dir,
++                threshold=cfg.noise_speech_ratio_threshold,
++            )
++            update_diarization_metadata_with_noise(
++                artifacts.diarization_metadata_json_path,
++                summary=noise_summary,
++            )
++            noise_speakers = list(noise_summary.get("noise_speakers") or [])
++        transcript_speaker_turns = speaker_turns
++        if noise_speakers and cfg.exclude_noise_speakers_from_transcript:
++            transcript_speaker_turns = [
++                turn
++                for turn in speaker_turns
++                if str(turn.get("speaker") or "") not in noise_speakers
++            ]
+         speaker_lines = _merge_similar(
+             [
+                 f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
+-                for turn in speaker_turns
++                for turn in transcript_speaker_turns
+             ],
+             cfg.merge_similar,
+         )
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index da2171a..9895cf3 100644
+index 9895cf3..8086c18 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -746,7 +746,7 @@ Queue (in order)
+@@ -751,6 +751,6 @@ Queue (in order)
  - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
  
- 149) PR-REMOVE-QUEUE-PAGE-01: Remove Queue page from navigation
+ 150) PR-NOISE-SPEAKER-FILTER-01: Detect and flag noise-only diarization speakers based on snippet VAD analysis
 -- Status: TODO
 +- Status: DONE
- - Tasks file: tasks/PR-REMOVE-QUEUE-PAGE-01.md
+ - Tasks file: tasks/PR-NOISE-SPEAKER-FILTER-01.md
  - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
+diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
+index 1ea242f..e759432 100644
+--- a/tests/test_cov_lan_transcriber_extra_pipeline.py
++++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
+@@ -3619,6 +3619,101 @@ async def test_run_pipeline_tolerates_session_transcriber_cleanup_before_restore
+     assert not hasattr(pipeline._whisperx_transcriber_state, "use_session_transcriber")
  
+ 
++@pytest.mark.asyncio
++async def test_run_pipeline_skips_noise_detection_when_disabled(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    monkeypatch.setattr(
++        pipeline,
++        "_whisperx_asr",
++        lambda *_a, **_k: (
++            [{"start": 0.0, "end": 1.0, "text": "hello team and thanks for joining"}],
++            {"language": "en", "language_probability": 0.95},
++        ),
++    )
++    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
++    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
++    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
++    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
++    monkeypatch.setattr(
++        pipeline,
++        "apply_noise_flags_to_manifest",
++        lambda *_a, **_k: pytest.fail("noise detection should be disabled"),
++    )
++
++    cfg = _settings(tmp_path, noise_detection_enabled=False)
++    result = await pipeline.run_pipeline(
++        audio_path=_audio_file(tmp_path, "no-noise-detection.mp3"),
++        cfg=cfg,
++        llm=_FakeLLM(),
++        diariser=_NoTracksDiariser(),
++        recording_id="rec-no-noise-detection",
++        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
++    )
++    assert result.summary.strip() == "- ok"
++
++
++@pytest.mark.asyncio
++async def test_run_pipeline_filters_noise_speakers_from_transcript(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    monkeypatch.setattr(
++        pipeline,
++        "_whisperx_asr",
++        lambda *_a, **_k: (
++            [
++                {"start": 0.0, "end": 1.0, "text": "hello team and thanks for joining"},
++                {"start": 1.0, "end": 2.0, "text": "background noise hiss static hum"},
++            ],
++            {"language": "en", "language_probability": 0.95},
++        ),
++    )
++    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
++    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
++    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
++    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
++    monkeypatch.setattr(
++        pipeline,
++        "apply_noise_flags_to_manifest",
++        lambda *_a, **_k: {
++            "noise_speakers": ["S2"],
++            "speaker_metrics": {"S2": {"flagged": True}},
++            "threshold": 0.3,
++        },
++    )
++    monkeypatch.setattr(
++        pipeline,
++        "update_diarization_metadata_with_noise",
++        lambda *_a, **_k: None,
++    )
++
++    class _NoiseDiariser:
++        async def __call__(self, _audio_path: Path):
++            return _annotation_from_segments(
++                (0.0, 1.0, "S1"),
++                (1.0, 2.0, "S2"),
++            )
++
++    cfg = _settings(tmp_path, exclude_noise_speakers_from_transcript=True)
++    result = await pipeline.run_pipeline(
++        audio_path=_audio_file(tmp_path, "filter-noise.mp3"),
++        cfg=cfg,
++        llm=_FakeLLM(),
++        diariser=_NoiseDiariser(),
++        recording_id="rec-noise-filter",
++        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
++    )
++    assert result.summary.strip() == "- ok"
++    transcript = json.loads(
++        (cfg.recordings_root / "rec-noise-filter" / "derived" / "transcript.json").read_text(
++            encoding="utf-8"
++        )
++    )
++    speaker_lines = transcript.get("speaker_lines") or []
++    assert any("S1" in line for line in speaker_lines)
++    assert all("S2" not in line for line in speaker_lines)
++
++
+ @pytest.mark.asyncio
+ async def test_run_pipeline_fails_fast_when_llm_model_is_blank(tmp_path: Path) -> None:
+     cfg = _settings(tmp_path, llm_model="   ")
+diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
+index 9fc8fea..ac41837 100644
+--- a/tests/test_pipeline_resume_coverage.py
++++ b/tests/test_pipeline_resume_coverage.py
+@@ -1002,11 +1002,295 @@ def test_stage_snippet_export_writes_manifest_metadata_and_counts(
+         "speaker_count": 1,
+         "warning_count": 1,
+         "degraded_diarization": False,
++        "noise_speakers": [],
+     }
+     manifest = json.loads(worker_tasks._snippets_manifest_path(ctx).read_text(encoding="utf-8"))  # noqa: SLF001
+     assert manifest["manifest_status"] == "partial"
+     assert manifest["accepted_snippets"] == 1
+     assert manifest["warning_count"] == 1
++    assert manifest["noise_speakers"] == []
++
++
++def test_stage_snippet_export_skips_metadata_noise_when_manifest_value_invalid(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    _cfg_value, ctx = _new_ctx(tmp_path, "rec-snippet-bad-noise", create_raw_audio=True)
++    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
++    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
++    ctx.artifacts.audio_sanitize_json_path.write_text(
++        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
++        encoding="utf-8",
++    )
++    ctx.artifacts.diarization_segments_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
++        json.dumps({"degraded": False}),
++        encoding="utf-8",
++    )
++
++    def _fake_export(request):
++        request.snippets_dir.mkdir(parents=True, exist_ok=True)
++        (request.snippets_dir.parent / "snippets_manifest.json").write_text(
++            json.dumps(
++                {
++                    "version": 1,
++                    "speakers": {
++                        "S1": [{"status": "accepted", "relative_path": "S1/1.wav"}],
++                    },
++                    "noise_speakers": "not-a-list",
++                }
++            ),
++            encoding="utf-8",
++        )
++        return []
++
++    monkeypatch.setattr(worker_tasks, "export_speaker_snippets", _fake_export)
++    monkeypatch.setattr(
++        worker_tasks,
++        "apply_noise_flags_to_manifest",
++        lambda *_a, **_k: {"noise_speakers": [], "speaker_metrics": {}, "threshold": 0.3},
++    )
++
++    def _no_op_metadata(*_a, **_k):
++        # Re-corrupt the manifest after apply_noise_flags_to_manifest so the
++        # finalize step preserves a non-list noise_speakers entry. This exercises
++        # the defensive isinstance guard in _stage_snippet_export.
++        manifest_path = worker_tasks._snippets_manifest_path(ctx)  # noqa: SLF001
++        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
++        manifest["noise_speakers"] = "still-not-a-list"
++        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
++
++    monkeypatch.setattr(
++        worker_tasks, "update_diarization_metadata_with_noise", _no_op_metadata
++    )
++
++    result = worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
++    assert "noise_speakers" not in result.metadata
++
++
++def test_stage_snippet_export_skips_noise_detection_when_disabled(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    _cfg_value, ctx = _new_ctx(tmp_path, "rec-snippet-no-noise", create_raw_audio=True)
++    ctx.pipeline_settings.noise_detection_enabled = False
++    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
++    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
++    ctx.artifacts.audio_sanitize_json_path.write_text(
++        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
++        encoding="utf-8",
++    )
++    ctx.artifacts.diarization_segments_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
++        json.dumps({"degraded": False}),
++        encoding="utf-8",
++    )
++
++    def _fake_export(request):
++        request.snippets_dir.mkdir(parents=True, exist_ok=True)
++        (request.snippets_dir.parent / "snippets_manifest.json").write_text(
++            json.dumps(
++                {
++                    "version": 1,
++                    "speakers": {
++                        "S1": [
++                            {"status": "accepted", "relative_path": "S1/1.wav"},
++                        ]
++                    },
++                    "noise_speakers": "not-a-list",
++                }
++            ),
++            encoding="utf-8",
++        )
++        return []
++
++    monkeypatch.setattr(worker_tasks, "export_speaker_snippets", _fake_export)
++    monkeypatch.setattr(
++        worker_tasks,
++        "apply_noise_flags_to_manifest",
++        lambda *_a, **_k: pytest.fail("noise detection should be disabled"),
++    )
++
++    result = worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
++    assert "noise_speakers" not in result.metadata
++
++
++def test_stage_export_artifacts_exclude_noise_handles_missing_or_empty_noise_list(
++    tmp_path: Path,
++) -> None:
++    cfg, ctx = _new_ctx(
++        tmp_path, "rec-export-exclude-no-noise", create_raw_audio=True
++    )
++    ctx.pipeline_settings.exclude_noise_speakers_from_transcript = True
++    ctx.pipeline_settings.llm_model = "stub-model"
++    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
++    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
++    ctx.artifacts.audio_sanitize_json_path.write_text(
++        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
++        encoding="utf-8",
++    )
++    # diarization_metadata: noise_speakers is None (not a list) for this branch.
++    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
++        json.dumps({"degraded": False, "noise_speakers": None}),
++        encoding="utf-8",
++    )
++    ctx.artifacts.diarization_segments_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
++        json.dumps(
++            [{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello team"}]
++        ),
++        encoding="utf-8",
++    )
++    snippets_dir = ctx.artifacts.recording_artifacts.snippets_dir
++    snippets_dir.mkdir(parents=True, exist_ok=True)
++    (snippets_dir.parent / "snippets_manifest.json").write_text(
++        json.dumps({"version": 1, "speakers": {}, "manifest_status": "ok"}),
++        encoding="utf-8",
++    )
++    derived = ctx.artifacts.derived_dir
++    (derived / "language_analysis.json").write_text(
++        json.dumps(
++            {
++                "language": {"detected": "en", "confidence": 0.9},
++                "dominant_language": "en",
++                "language_distribution": {"en": 1.0},
++                "language_spans": [],
++                "segments": [
++                    {
++                        "text": "hello team this is the real speaker speaking now",
++                        "start": 0.0,
++                        "end": 1.0,
++                    }
++                ],
++                "target_summary_language": "en",
++                "review": {},
++            }
++        ),
++        encoding="utf-8",
++    )
++    (derived / "asr_execution.json").write_text(
++        json.dumps({"used_multilingual_path": False, "selected_mode": "single_language"}),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.summary_json_path.write_text(
++        json.dumps({"status": "ok", "summary": "ok"}),
++        encoding="utf-8",
++    )
++
++    result_none = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
++    assert result_none.status == "completed"
++
++    # Now re-run with empty list -> should also keep all turns
++    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
++        json.dumps({"degraded": False, "noise_speakers": []}),
++        encoding="utf-8",
++    )
++    result_empty = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
++    assert result_empty.status == "completed"
++    transcript_payload = json.loads(
++        ctx.artifacts.recording_artifacts.transcript_json_path.read_text(encoding="utf-8")
++    )
++    speaker_lines = transcript_payload.get("speaker_lines") or []
++    assert any("S1" in line for line in speaker_lines)
++
++
++def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    cfg, ctx = _new_ctx(
++        tmp_path, "rec-export-noise-filter", create_raw_audio=True
++    )
++    ctx.pipeline_settings.exclude_noise_speakers_from_transcript = True
++    ctx.pipeline_settings.llm_model = "stub-model"
++    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
++    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
++    ctx.artifacts.audio_sanitize_json_path.write_text(
++        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
++        json.dumps(
++            {
++                "degraded": False,
++                "noise_speakers": ["SPEAKER_NOISE"],
++            }
++        ),
++        encoding="utf-8",
++    )
++    ctx.artifacts.diarization_segments_json_path.write_text(
++        json.dumps(
++            [
++                {"speaker": "SPEAKER_REAL", "start": 0.0, "end": 1.0},
++                {"speaker": "SPEAKER_NOISE", "start": 1.0, "end": 1.5},
++            ]
++        ),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
++        json.dumps(
++            [
++                {"speaker": "SPEAKER_REAL", "start": 0.0, "end": 1.0, "text": "hello"},
++                {"speaker": "SPEAKER_NOISE", "start": 1.0, "end": 1.5, "text": "noise"},
++            ]
++        ),
++        encoding="utf-8",
++    )
++    snippets_dir = ctx.artifacts.recording_artifacts.snippets_dir
++    snippets_dir.mkdir(parents=True, exist_ok=True)
++    (snippets_dir.parent / "snippets_manifest.json").write_text(
++        json.dumps({"version": 1, "speakers": {}, "manifest_status": "ok"}),
++        encoding="utf-8",
++    )
++    derived = ctx.artifacts.derived_dir
++    (derived / "language_analysis.json").write_text(
++        json.dumps(
++            {
++                "language": {"detected": "en", "confidence": 0.9},
++                "dominant_language": "en",
++                "language_distribution": {"en": 1.0},
++                "language_spans": [],
++                "segments": [
++                    {"text": "hello team this is the real speaker speaking now", "start": 0.0, "end": 1.0},
++                    {"text": "background noise hiss static hum", "start": 1.0, "end": 1.5},
++                ],
++                "target_summary_language": "en",
++                "review": {},
++            }
++        ),
++        encoding="utf-8",
++    )
++    (derived / "asr_execution.json").write_text(
++        json.dumps({"used_multilingual_path": False, "selected_mode": "single_language"}),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.summary_json_path.write_text(
++        json.dumps({"status": "ok", "summary": "ok"}),
++        encoding="utf-8",
++    )
++
++    result = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
++    assert result.status == "completed"
++    transcript_payload = json.loads(
++        ctx.artifacts.recording_artifacts.transcript_json_path.read_text(encoding="utf-8")
++    )
++    speaker_lines = transcript_payload.get("speaker_lines") or []
++    assert any("SPEAKER_REAL" in line for line in speaker_lines)
++    assert all("SPEAKER_NOISE" not in line for line in speaker_lines)
+ 
+ 
+ def test_snippet_manifest_helpers_cover_edge_cases(tmp_path: Path) -> None:
+diff --git a/tests/test_snippet_repair.py b/tests/test_snippet_repair.py
+index 2b16e4b..88fa62f 100644
+--- a/tests/test_snippet_repair.py
++++ b/tests/test_snippet_repair.py
+@@ -767,6 +767,39 @@ def test_replace_staged_outputs_failure_without_existing_targets(
+     assert not (cfg.recordings_root / "rec-rollback-empty-1" / "derived" / "snippets").exists()
+ 
+ 
++def test_repair_recording_snippets_skips_noise_detection_when_disabled(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-repair-no-noise",
++        source="upload",
++        source_filename="repair-no-noise.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    _seed_repair_artifacts(cfg, "rec-repair-no-noise")
++    monkeypatch.setenv("LAN_NOISE_DETECTION_ENABLED", "false")
++    monkeypatch.setattr(
++        snippet_repair,
++        "apply_noise_flags_to_manifest",
++        lambda *_a, **_k: pytest.fail("noise detection should be disabled"),
++    )
++
++    snippet_repair.repair_recording_snippets(
++        "rec-repair-no-noise",
++        settings=cfg,
++        origin="pytest",
++    )
++    manifest = json.loads(
++        (cfg.recordings_root / "rec-repair-no-noise" / "derived" / "snippets_manifest.json").read_text(
++            encoding="utf-8"
++        )
++    )
++    assert "noise_speakers" not in manifest
++
++
+ def test_repair_recording_snippets_is_idempotent(tmp_path: Path) -> None:
+     cfg = _cfg(tmp_path)
+     init_db(cfg)
+diff --git a/lan_transcriber/pipeline_steps/noise_detection.py b/lan_transcriber/pipeline_steps/noise_detection.py
+new file mode 100644
+index 0000000..9b69316
+--- /dev/null
++++ b/lan_transcriber/pipeline_steps/noise_detection.py
+@@ -0,0 +1,232 @@
++"""Detect diarization speakers whose snippets contain no real speech.
++
++After ``export_speaker_snippets`` writes accepted snippets and the manifest,
++:func:`apply_noise_flags_to_manifest` runs a lightweight VAD pass on each
++accepted snippet, annotates manifest entries with ``speech_ratio`` and
++``noise_suspected``, and surfaces a top-level ``noise_speakers`` summary.
++The diarization metadata file is updated in place by
++:func:`update_diarization_metadata_with_noise` so downstream consumers
++(UI, transcript export) see a single source of truth.
++"""
++
++from __future__ import annotations
++
++import audioop
++import json
++import wave
++from pathlib import Path
++from typing import Any
++
++from lan_transcriber.artifacts import atomic_write_json
++
++DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD = 0.3
++
++_RMS_THRESHOLD = 350
++_FRAME_SECONDS = 0.03
++
++
++def compute_wav_speech_ratio(audio_path: Path) -> float | None:
++    """Return ratio of voiced frames in ``audio_path`` (PCM WAV).
++
++    Uses the same RMS-based 30 ms windowing as the upstream precheck so that
++    silence/noise-only snippets and real speech are evaluated consistently.
++    Returns ``None`` for unreadable inputs and ``0.0`` for empty WAVs.
++    """
++
++    if audio_path.suffix.lower() != ".wav":
++        return None
++    try:
++        with wave.open(str(audio_path), "rb") as src:
++            rate = src.getframerate()
++            channels = src.getnchannels()
++            sample_width = src.getsampwidth()
++            frame_samples = max(int(rate * _FRAME_SECONDS), 1)
++            frame_bytes = frame_samples * channels * sample_width
++            voiced = 0
++            total = 0
++            while True:
++                chunk = src.readframes(frame_samples)
++                if not chunk:
++                    break
++                if len(chunk) < frame_bytes // 2:
++                    break
++                total += 1
++                if audioop.rms(chunk, sample_width) >= _RMS_THRESHOLD:
++                    voiced += 1
++        if total == 0:
++            return 0.0
++        return round(voiced / float(total), 4)
++    except Exception:
++        return None
++
++
++def _accepted_entries(speaker_entries: list[Any]) -> list[dict[str, Any]]:
++    return [
++        entry
++        for entry in speaker_entries
++        if isinstance(entry, dict) and str(entry.get("status") or "") == "accepted"
++    ]
++
++
++def _speaker_speech_ratio(
++    accepted: list[dict[str, Any]],
++    *,
++    snippets_dir: Path,
++) -> tuple[float | None, int, int]:
++    """Compute aggregate speech ratio across accepted snippets for one speaker.
++
++    Returns ``(ratio, evaluated_count, missing_count)`` where ``ratio`` is the
++    average of per-snippet ratios that could be computed. ``None`` is returned
++    when no snippet could be evaluated.
++    """
++
++    ratios: list[float] = []
++    missing = 0
++    for entry in accepted:
++        relative_path = str(entry.get("relative_path") or "").strip()
++        if not relative_path:
++            missing += 1
++            continue
++        snippet_path = snippets_dir / relative_path
++        ratio = compute_wav_speech_ratio(snippet_path)
++        if ratio is None:
++            missing += 1
++            continue
++        entry["speech_ratio"] = ratio
++        ratios.append(ratio)
++    if not ratios:
++        return None, 0, missing
++    avg = round(sum(ratios) / len(ratios), 4)
++    return avg, len(ratios), missing
++
++
++def analyze_snippet_noise(
++    manifest: dict[str, Any],
++    *,
++    snippets_dir: Path,
++    threshold: float = DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD,
++) -> dict[str, Any]:
++    """Mutate ``manifest`` with per-speaker noise flags and return a summary.
++
++    For each speaker whose accepted snippets average a speech ratio below
++    ``threshold``, the speaker is appended to the returned ``noise_speakers``
++    list and every accepted entry in that speaker's manifest list gains
++    ``noise_suspected=True``. Speakers without evaluable snippets are left
++    untouched and not flagged.
++    """
++
++    speakers_payload = manifest.get("speakers")
++    summary: dict[str, Any] = {
++        "noise_speakers": [],
++        "speaker_metrics": {},
++        "threshold": round(max(0.0, min(float(threshold), 1.0)), 4),
++    }
++    if not isinstance(speakers_payload, dict):
++        manifest["noise_speakers"] = []
++        manifest["noise_speech_ratio_threshold"] = summary["threshold"]
++        return summary
++    noise_speakers: list[str] = []
++    metrics: dict[str, Any] = {}
++    for speaker_label in sorted(speakers_payload):
++        entries = speakers_payload.get(speaker_label)
++        if not isinstance(entries, list):
++            continue
++        accepted = _accepted_entries(entries)
++        if not accepted:
++            continue
++        ratio, evaluated, missing = _speaker_speech_ratio(
++            accepted, snippets_dir=snippets_dir
++        )
++        if ratio is None:
++            metrics[speaker_label] = {
++                "speech_ratio": None,
++                "evaluated_snippets": 0,
++                "missing_snippets": missing,
++                "flagged": False,
++            }
++            continue
++        flagged = ratio < summary["threshold"]
++        metrics[speaker_label] = {
++            "speech_ratio": ratio,
++            "evaluated_snippets": evaluated,
++            "missing_snippets": missing,
++            "flagged": bool(flagged),
++        }
++        if flagged:
++            noise_speakers.append(speaker_label)
++            for entry in accepted:
++                entry["noise_suspected"] = True
++    manifest["noise_speakers"] = list(noise_speakers)
++    manifest["noise_speech_ratio_threshold"] = summary["threshold"]
++    summary["noise_speakers"] = list(noise_speakers)
++    summary["speaker_metrics"] = metrics
++    return summary
++
++
++def apply_noise_flags_to_manifest(
++    manifest_path: Path,
++    *,
++    snippets_dir: Path,
++    threshold: float = DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD,
++) -> dict[str, Any]:
++    """Load the snippets manifest, annotate it with noise flags, and persist it."""
++
++    if not manifest_path.exists():
++        return {
++            "noise_speakers": [],
++            "speaker_metrics": {},
++            "threshold": round(max(0.0, min(float(threshold), 1.0)), 4),
++        }
++    try:
++        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
++    except (OSError, json.JSONDecodeError):
++        return {
++            "noise_speakers": [],
++            "speaker_metrics": {},
++            "threshold": round(max(0.0, min(float(threshold), 1.0)), 4),
++        }
++    if not isinstance(manifest, dict):
++        return {
++            "noise_speakers": [],
++            "speaker_metrics": {},
++            "threshold": round(max(0.0, min(float(threshold), 1.0)), 4),
++        }
++    summary = analyze_snippet_noise(
++        manifest,
++        snippets_dir=snippets_dir,
++        threshold=threshold,
++    )
++    atomic_write_json(manifest_path, manifest)
++    return summary
++
++
++def update_diarization_metadata_with_noise(
++    metadata_path: Path,
++    *,
++    summary: dict[str, Any],
++) -> None:
++    """Persist the noise-speaker summary onto ``diarization_metadata.json``."""
++
++    if not metadata_path.exists():
++        return
++    try:
++        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
++    except (OSError, json.JSONDecodeError):
++        return
++    if not isinstance(payload, dict):
++        return
++    payload["noise_speakers"] = list(summary.get("noise_speakers") or [])
++    payload["noise_speaker_metrics"] = dict(summary.get("speaker_metrics") or {})
++    payload["noise_speech_ratio_threshold"] = summary.get(
++        "threshold", DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD
++    )
++    atomic_write_json(metadata_path, payload)
++
++
++__all__ = [
++    "DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD",
++    "analyze_snippet_noise",
++    "apply_noise_flags_to_manifest",
++    "compute_wav_speech_ratio",
++    "update_diarization_metadata_with_noise",
++]
+diff --git a/tests/test_pipeline_steps_noise_detection.py b/tests/test_pipeline_steps_noise_detection.py
+new file mode 100644
+index 0000000..87870d6
+--- /dev/null
++++ b/tests/test_pipeline_steps_noise_detection.py
+@@ -0,0 +1,361 @@
++from __future__ import annotations
++
++import json
++import math
++import struct
++import wave
++from pathlib import Path
++
++import pytest
++
++from lan_transcriber.pipeline_steps import noise_detection
++
++
++def _silent_wav(path: Path, *, duration_sec: float = 4.0) -> Path:
++    rate = 16000
++    samples = int(rate * duration_sec)
++    payload = b"\x00\x00" * samples
++    path.parent.mkdir(parents=True, exist_ok=True)
++    with wave.open(str(path), "wb") as wav_out:
++        wav_out.setnchannels(1)
++        wav_out.setsampwidth(2)
++        wav_out.setframerate(rate)
++        wav_out.writeframes(payload)
++    return path
++
++
++def _tone_wav(
++    path: Path,
++    *,
++    duration_sec: float = 4.0,
++    amplitude: int = 12000,
++    freq: float = 220.0,
++) -> Path:
++    rate = 16000
++    samples = int(rate * duration_sec)
++    chunk = bytearray()
++    for index in range(samples):
++        value = int(amplitude * math.sin(2 * math.pi * freq * (index / rate)))
++        chunk += struct.pack("<h", value)
++    path.parent.mkdir(parents=True, exist_ok=True)
++    with wave.open(str(path), "wb") as wav_out:
++        wav_out.setnchannels(1)
++        wav_out.setsampwidth(2)
++        wav_out.setframerate(rate)
++        wav_out.writeframes(bytes(chunk))
++    return path
++
++
++def _mixed_wav(
++    path: Path,
++    *,
++    speech_ratio: float,
++    duration_sec: float = 4.0,
++    amplitude: int = 12000,
++    freq: float = 220.0,
++) -> Path:
++    """Produce a WAV where the first ``speech_ratio`` fraction is a tone and the rest is silence."""
++
++    rate = 16000
++    total_samples = int(rate * duration_sec)
++    voiced_samples = int(total_samples * speech_ratio)
++    chunk = bytearray()
++    for index in range(voiced_samples):
++        value = int(amplitude * math.sin(2 * math.pi * freq * (index / rate)))
++        chunk += struct.pack("<h", value)
++    chunk += b"\x00\x00" * (total_samples - voiced_samples)
++    path.parent.mkdir(parents=True, exist_ok=True)
++    with wave.open(str(path), "wb") as wav_out:
++        wav_out.setnchannels(1)
++        wav_out.setsampwidth(2)
++        wav_out.setframerate(rate)
++        wav_out.writeframes(bytes(chunk))
++    return path
++
++
++def test_compute_speech_ratio_returns_zero_for_silence(tmp_path: Path) -> None:
++    audio = _silent_wav(tmp_path / "silent.wav")
++    assert noise_detection.compute_wav_speech_ratio(audio) == 0.0
++
++
++def test_compute_speech_ratio_returns_high_value_for_tone(tmp_path: Path) -> None:
++    audio = _tone_wav(tmp_path / "tone.wav")
++    ratio = noise_detection.compute_wav_speech_ratio(audio)
++    assert ratio is not None
++    assert ratio > 0.9
++
++
++def test_compute_speech_ratio_rejects_non_wav_path(tmp_path: Path) -> None:
++    bogus = tmp_path / "x.mp3"
++    bogus.write_bytes(b"not wav")
++    assert noise_detection.compute_wav_speech_ratio(bogus) is None
++
++
++def test_compute_speech_ratio_handles_unreadable_file(tmp_path: Path) -> None:
++    broken = tmp_path / "broken.wav"
++    broken.write_bytes(b"\x00")
++    assert noise_detection.compute_wav_speech_ratio(broken) is None
++
++
++def test_compute_speech_ratio_returns_zero_when_no_full_frames(tmp_path: Path) -> None:
++    rate = 16000
++    path = tmp_path / "tiny.wav"
++    with wave.open(str(path), "wb") as wav_out:
++        wav_out.setnchannels(1)
++        wav_out.setsampwidth(2)
++        wav_out.setframerate(rate)
++        wav_out.writeframes(b"")
++    assert noise_detection.compute_wav_speech_ratio(path) == 0.0
++
++
++def _build_manifest(
++    *,
++    snippets_dir: Path,
++    speakers: dict[str, list[Path | None]],
++) -> dict[str, object]:
++    speakers_payload: dict[str, list[dict[str, object]]] = {}
++    for speaker_label, snippet_paths in speakers.items():
++        entries: list[dict[str, object]] = []
++        for index, snippet in enumerate(snippet_paths, start=1):
++            if snippet is None:
++                entries.append(
++                    {
++                        "status": "rejected_short",
++                        "ranking_position": index,
++                    }
++                )
++                continue
++            relative = snippet.relative_to(snippets_dir).as_posix()
++            entries.append(
++                {
++                    "status": "accepted",
++                    "ranking_position": index,
++                    "relative_path": relative,
++                }
++            )
++        speakers_payload[speaker_label] = entries
++    return {"version": 1, "speakers": speakers_payload}
++
++
++def test_analyze_snippet_noise_flags_silence_speakers_and_skips_real_ones(
++    tmp_path: Path,
++) -> None:
++    snippets_dir = tmp_path / "snippets"
++    silent_dir = snippets_dir / "SPEAKER_00"
++    voiced_dir = snippets_dir / "SPEAKER_01"
++    silent = _silent_wav(silent_dir / "1.wav")
++    voiced = _tone_wav(voiced_dir / "1.wav")
++    manifest = _build_manifest(
++        snippets_dir=snippets_dir,
++        speakers={"SPEAKER_00": [silent], "SPEAKER_01": [voiced]},
++    )
++    summary = noise_detection.analyze_snippet_noise(
++        manifest, snippets_dir=snippets_dir, threshold=0.3
++    )
++    assert summary["noise_speakers"] == ["SPEAKER_00"]
++    assert manifest["noise_speakers"] == ["SPEAKER_00"]
++    silent_entry = manifest["speakers"]["SPEAKER_00"][0]
++    voiced_entry = manifest["speakers"]["SPEAKER_01"][0]
++    assert silent_entry["noise_suspected"] is True
++    assert silent_entry["speech_ratio"] == 0.0
++    assert "noise_suspected" not in voiced_entry
++    assert voiced_entry["speech_ratio"] > 0.3
++
++
++def test_analyze_snippet_noise_threshold_boundary_just_below(tmp_path: Path) -> None:
++    snippets_dir = tmp_path / "snippets"
++    speaker_dir = snippets_dir / "SPEAKER_00"
++    snippet = _mixed_wav(speaker_dir / "1.wav", speech_ratio=0.20)
++    manifest = _build_manifest(
++        snippets_dir=snippets_dir,
++        speakers={"SPEAKER_00": [snippet]},
++    )
++    summary = noise_detection.analyze_snippet_noise(
++        manifest, snippets_dir=snippets_dir, threshold=0.3
++    )
++    assert summary["noise_speakers"] == ["SPEAKER_00"]
++    assert manifest["speakers"]["SPEAKER_00"][0]["noise_suspected"] is True
++
++
++def test_analyze_snippet_noise_threshold_boundary_just_above(tmp_path: Path) -> None:
++    snippets_dir = tmp_path / "snippets"
++    speaker_dir = snippets_dir / "SPEAKER_00"
++    snippet = _mixed_wav(speaker_dir / "1.wav", speech_ratio=0.55)
++    manifest = _build_manifest(
++        snippets_dir=snippets_dir,
++        speakers={"SPEAKER_00": [snippet]},
++    )
++    summary = noise_detection.analyze_snippet_noise(
++        manifest, snippets_dir=snippets_dir, threshold=0.3
++    )
++    assert summary["noise_speakers"] == []
++    assert "noise_suspected" not in manifest["speakers"]["SPEAKER_00"][0]
++
++
++def test_analyze_snippet_noise_handles_missing_speakers_payload() -> None:
++    manifest: dict[str, object] = {"version": 1}
++    summary = noise_detection.analyze_snippet_noise(
++        manifest, snippets_dir=Path("/tmp/missing"), threshold=0.3
++    )
++    assert summary["noise_speakers"] == []
++    assert manifest["noise_speakers"] == []
++
++
++def test_analyze_snippet_noise_skips_non_dict_speaker_entries(tmp_path: Path) -> None:
++    manifest: dict[str, object] = {
++        "version": 1,
++        "speakers": {
++            "SPEAKER_00": "not-a-list",
++            "SPEAKER_01": [
++                "stringy",
++                {"status": "rejected_short"},
++                {"status": "accepted"},
++            ],
++        },
++    }
++    summary = noise_detection.analyze_snippet_noise(
++        manifest, snippets_dir=tmp_path, threshold=0.3
++    )
++    assert summary["noise_speakers"] == []
++    metrics = summary["speaker_metrics"]["SPEAKER_01"]
++    assert metrics["evaluated_snippets"] == 0
++    assert metrics["missing_snippets"] == 1
++
++
++def test_apply_noise_flags_to_manifest_persists_changes(tmp_path: Path) -> None:
++    snippets_dir = tmp_path / "snippets"
++    silent = _silent_wav(snippets_dir / "SPEAKER_00" / "1.wav")
++    manifest_path = tmp_path / "snippets_manifest.json"
++    manifest = _build_manifest(
++        snippets_dir=snippets_dir,
++        speakers={"SPEAKER_00": [silent]},
++    )
++    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
++
++    summary = noise_detection.apply_noise_flags_to_manifest(
++        manifest_path,
++        snippets_dir=snippets_dir,
++        threshold=0.3,
++    )
++    assert summary["noise_speakers"] == ["SPEAKER_00"]
++    persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
++    assert persisted["noise_speakers"] == ["SPEAKER_00"]
++    assert persisted["speakers"]["SPEAKER_00"][0]["noise_suspected"] is True
++
++
++def test_apply_noise_flags_to_manifest_returns_empty_when_missing(tmp_path: Path) -> None:
++    summary = noise_detection.apply_noise_flags_to_manifest(
++        tmp_path / "missing.json",
++        snippets_dir=tmp_path,
++        threshold=0.3,
++    )
++    assert summary["noise_speakers"] == []
++    assert summary["threshold"] == 0.3
++
++
++def test_apply_noise_flags_to_manifest_handles_invalid_json(tmp_path: Path) -> None:
++    manifest_path = tmp_path / "snippets_manifest.json"
++    manifest_path.write_text("{not-json", encoding="utf-8")
++    summary = noise_detection.apply_noise_flags_to_manifest(
++        manifest_path, snippets_dir=tmp_path, threshold=0.3
++    )
++    assert summary["noise_speakers"] == []
++
++
++def test_apply_noise_flags_to_manifest_handles_non_dict_payload(tmp_path: Path) -> None:
++    manifest_path = tmp_path / "snippets_manifest.json"
++    manifest_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
++    summary = noise_detection.apply_noise_flags_to_manifest(
++        manifest_path, snippets_dir=tmp_path, threshold=0.3
++    )
++    assert summary["noise_speakers"] == []
++
++
++def test_update_diarization_metadata_with_noise_persists_summary(tmp_path: Path) -> None:
++    metadata_path = tmp_path / "diarization_metadata.json"
++    metadata_path.write_text(json.dumps({"version": 1, "mode": "pyannote"}), encoding="utf-8")
++    summary = {
++        "noise_speakers": ["SPEAKER_00"],
++        "speaker_metrics": {
++            "SPEAKER_00": {"speech_ratio": 0.0, "evaluated_snippets": 1, "flagged": True},
++        },
++        "threshold": 0.3,
++    }
++    noise_detection.update_diarization_metadata_with_noise(
++        metadata_path, summary=summary
++    )
++    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
++    assert payload["noise_speakers"] == ["SPEAKER_00"]
++    assert payload["noise_speech_ratio_threshold"] == 0.3
++    assert payload["noise_speaker_metrics"]["SPEAKER_00"]["flagged"] is True
++
++
++def test_update_diarization_metadata_handles_missing_path(tmp_path: Path) -> None:
++    noise_detection.update_diarization_metadata_with_noise(
++        tmp_path / "missing.json",
++        summary={"noise_speakers": [], "speaker_metrics": {}, "threshold": 0.3},
++    )
++
++
++def test_update_diarization_metadata_handles_invalid_json(tmp_path: Path) -> None:
++    metadata_path = tmp_path / "metadata.json"
++    metadata_path.write_text("not-json", encoding="utf-8")
++    noise_detection.update_diarization_metadata_with_noise(
++        metadata_path,
++        summary={"noise_speakers": ["SPEAKER_00"], "speaker_metrics": {}, "threshold": 0.3},
++    )
++    # File is left untouched on parse failure
++    assert metadata_path.read_text(encoding="utf-8") == "not-json"
++
++
++def test_update_diarization_metadata_handles_non_dict_payload(tmp_path: Path) -> None:
++    metadata_path = tmp_path / "metadata.json"
++    metadata_path.write_text(json.dumps([1, 2]), encoding="utf-8")
++    noise_detection.update_diarization_metadata_with_noise(
++        metadata_path,
++        summary={"noise_speakers": [], "speaker_metrics": {}, "threshold": 0.3},
++    )
++    assert json.loads(metadata_path.read_text(encoding="utf-8")) == [1, 2]
++
++
++def test_speaker_with_only_missing_relative_path_is_not_flagged(tmp_path: Path) -> None:
++    snippets_dir = tmp_path / "snippets"
++    snippets_dir.mkdir()
++    manifest = {
++        "version": 1,
++        "speakers": {
++            "SPEAKER_00": [
++                {"status": "accepted", "relative_path": ""},
++            ],
++        },
++    }
++    summary = noise_detection.analyze_snippet_noise(
++        manifest, snippets_dir=snippets_dir, threshold=0.3
++    )
++    assert summary["noise_speakers"] == []
++    metrics = summary["speaker_metrics"]["SPEAKER_00"]
++    assert metrics["missing_snippets"] == 1
++    assert metrics["evaluated_snippets"] == 0
++    assert metrics["flagged"] is False
++
++
++def test_analyze_snippet_noise_clamps_threshold(tmp_path: Path) -> None:
++    snippets_dir = tmp_path / "snippets"
++    snippets_dir.mkdir()
++    manifest = {"version": 1, "speakers": {}}
++    summary = noise_detection.analyze_snippet_noise(
++        manifest, snippets_dir=snippets_dir, threshold=2.0
++    )
++    assert summary["threshold"] == 1.0
++    assert manifest["noise_speech_ratio_threshold"] == 1.0
++
++
++@pytest.mark.parametrize("threshold", [0.0, 0.5, 1.0])
++def test_analyze_snippet_noise_round_trip_thresholds(tmp_path: Path, threshold: float) -> None:
++    snippets_dir = tmp_path / "snippets"
++    snippets_dir.mkdir()
++    manifest = {"version": 1, "speakers": {}}
++    summary = noise_detection.analyze_snippet_noise(
++        manifest, snippets_dir=snippets_dir, threshold=threshold
++    )
++    assert summary["threshold"] == threshold

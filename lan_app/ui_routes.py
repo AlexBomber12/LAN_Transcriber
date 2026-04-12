@@ -2333,6 +2333,11 @@ def _speaker_snippet_context(
     no_clean_snippet_message = (
         None if clean_snippets else _no_clean_snippet_message(entries)
     )
+    noise_speakers_raw = manifest.get("noise_speakers") if isinstance(manifest, dict) else None
+    noise_suspected = (
+        isinstance(noise_speakers_raw, list)
+        and speaker_label in {str(item) for item in noise_speakers_raw}
+    )
     return {
         "clean_snippets": clean_snippets,
         "snippet_warnings": _snippet_warning_messages(entries),
@@ -2346,6 +2351,7 @@ def _speaker_snippet_context(
             clean_snippets=clean_snippets,
             no_clean_snippet_message=no_clean_snippet_message,
         ),
+        "noise_suspected": bool(noise_suspected),
     }
 
 
@@ -2831,6 +2837,7 @@ def _speakers_tab_context(
                 "snippet_warnings": snippet_context["snippet_warnings"],
                 "no_clean_snippet_message": snippet_context["no_clean_snippet_message"],
                 "snippet_ui_state": snippet_context["snippet_ui_state"],
+                "noise_suspected": bool(snippet_context.get("noise_suspected")),
                 "trusted_sample_state": _trusted_sample_state(
                     trusted_samples_by_speaker.get(speaker, [])
                 ),
