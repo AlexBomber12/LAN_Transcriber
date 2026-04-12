@@ -313,6 +313,24 @@ def speakers_overlap(
     return False
 
 
+def _merge_intervals(
+    intervals: Sequence[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Union overlapping intervals into non-overlapping sorted spans."""
+
+    positive = sorted((s, e) for s, e in intervals if e > s)
+    if not positive:
+        return []
+    merged: list[tuple[float, float]] = [positive[0]]
+    for start, end in positive[1:]:
+        prev_start, prev_end = merged[-1]
+        if start <= prev_end:
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def speakers_overlap_ratio(
     speaker_a: str,
     speaker_b: str,
@@ -320,40 +338,38 @@ def speakers_overlap_ratio(
 ) -> float:
     """Return the fraction of the shorter speaker's total speech that overlaps.
 
-    Uses the shorter speaker as denominator because even a small absolute
-    overlap is significant if the speaker only has a few seconds of speech.
-    Returns 0.0 if either speaker has no segments.
+    Each speaker's intervals are unioned first so that overlapping segments
+    (common after earlier merges collapse multiple labels) are not
+    double-counted.  Uses the shorter speaker as denominator because even a
+    small absolute overlap is significant if the speaker only has a few
+    seconds of speech.  Returns 0.0 if either speaker has no segments.
     """
 
     if speaker_a == speaker_b:
         return 0.0
-    a_segments = [
+    a_merged = _merge_intervals([
         (
             safe_float(row.get("start"), default=0.0),
             safe_float(row.get("end"), default=0.0),
         )
         for row in diar_segments
         if str(row.get("speaker") or "") == speaker_a
-    ]
-    b_segments = [
+    ])
+    b_merged = _merge_intervals([
         (
             safe_float(row.get("start"), default=0.0),
             safe_float(row.get("end"), default=0.0),
         )
         for row in diar_segments
         if str(row.get("speaker") or "") == speaker_b
-    ]
-    a_total = sum(max(e - s, 0.0) for s, e in a_segments)
-    b_total = sum(max(e - s, 0.0) for s, e in b_segments)
+    ])
+    a_total = sum(e - s for s, e in a_merged)
+    b_total = sum(e - s for s, e in b_merged)
     if a_total <= 0.0 or b_total <= 0.0:
         return 0.0
     overlap_seconds = 0.0
-    for a_start, a_end in a_segments:
-        if a_end <= a_start:
-            continue
-        for b_start, b_end in b_segments:
-            if b_end <= b_start:
-                continue
+    for a_start, a_end in a_merged:
+        for b_start, b_end in b_merged:
             overlap = min(a_end, b_end) - max(a_start, b_start)
             if overlap > 0.0:
                 overlap_seconds += overlap

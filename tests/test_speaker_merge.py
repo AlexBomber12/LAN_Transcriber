@@ -946,7 +946,7 @@ def test_speakers_overlap_ratio_zero_length_segments() -> None:
 
 
 def test_speakers_overlap_ratio_skips_zero_length_in_loop() -> None:
-    """Zero-length segments are skipped inside the overlap loop."""
+    """Zero-length segments are skipped via _merge_intervals."""
     segments = [
         _segment("A", 0.0, 5.0),
         _segment("A", 6.0, 6.0),  # zero-length A
@@ -955,6 +955,25 @@ def test_speakers_overlap_ratio_skips_zero_length_in_loop() -> None:
     ]
     # A total = 5.0, B total = 2.0, overlap = 2.0, ratio = 2.0 / 2.0 = 1.0
     assert speakers_overlap_ratio("A", "B", segments) == pytest.approx(1.0)
+
+
+def test_speakers_overlap_ratio_unions_overlapping_intervals() -> None:
+    """After merge collapse, a speaker can have overlapping segments.
+
+    Without interval union the overlap would be double-counted, inflating
+    the ratio and potentially blocking a valid merge.
+    """
+    segments = [
+        # Speaker A has two overlapping segments after a merge collapse:
+        _segment("A", 0.0, 10.0),
+        _segment("A", 5.0, 15.0),  # overlaps with the first
+        # Speaker B has one segment that overlaps with A's union [0, 15):
+        _segment("B", 12.0, 20.0),
+    ]
+    # A union: [0, 15) = 15s.  B union: [12, 20) = 8s.
+    # Overlap of [0,15) and [12,20) = [12,15) = 3s.
+    # ratio = 3 / min(15, 8) = 3 / 8 = 0.375
+    assert speakers_overlap_ratio("A", "B", segments) == pytest.approx(0.375)
 
 
 def test_merge_no_meaningful_overlap() -> None:
