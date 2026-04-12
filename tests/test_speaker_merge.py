@@ -12,6 +12,7 @@ import pytest
 
 from lan_transcriber.pipeline_steps import orchestrator as pipeline_orchestrator
 from lan_transcriber.pipeline_steps.speaker_merge import (
+    DEFAULT_SPEAKER_MERGE_NO_OVERLAP_SIMILARITY_THRESHOLD,
     DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
     compute_pairwise_similarity,
     extract_speaker_embeddings,
@@ -323,7 +324,7 @@ def test_no_merge_below_threshold() -> None:
         _segment("A", 0.0, 5.0),
         _segment("B", 6.0, 11.0),
     ]
-    # similarity 0.75 between A and B, below the default 0.80 threshold.
+    # similarity 0.75 between A and B, below both thresholds when set equal.
     sim = 0.75
     complement = math.sqrt(1.0 - sim * sim)
     model = _make_embedding_model(
@@ -338,6 +339,7 @@ def test_no_merge_below_threshold() -> None:
         audio_path=_AUDIO_PATH,
         embedding_model=model,
         similarity_threshold=DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
+        no_overlap_similarity_threshold=DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
     )
     assert merge_map == {}
     assert {row["speaker"] for row in updated} == {"A", "B"}
@@ -693,6 +695,7 @@ def test_diagnostics_low_similarity() -> None:
         audio_path=_AUDIO_PATH,
         embedding_model=model,
         similarity_threshold=DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
+        no_overlap_similarity_threshold=DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
     )
     assert merge_map == {}
     assert diagnostics["embedding_model_available"] is True
@@ -708,6 +711,9 @@ def test_diagnostics_low_similarity() -> None:
     assert low["similarity"] == pytest.approx(sim)
     assert low["overlap"] is False
     assert {low["speaker_a"], low["speaker_b"]} == {"A", "B"}
+    assert low["effective_threshold"] == pytest.approx(
+        DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD
+    )
 
 
 def test_diagnostics_overlap() -> None:
@@ -736,6 +742,9 @@ def test_diagnostics_overlap() -> None:
     assert overlap_entry["overlap"] is True
     assert overlap_entry["similarity"] == pytest.approx(1.0)
     assert {overlap_entry["speaker_a"], overlap_entry["speaker_b"]} == {"A", "B"}
+    assert overlap_entry["effective_threshold"] == pytest.approx(
+        DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD
+    )
 
 
 def test_diagnostics_merged() -> None:
@@ -764,9 +773,158 @@ def test_diagnostics_merged() -> None:
     assert entry["overlap"] is False
     assert entry["similarity"] == pytest.approx(1.0)
     assert {entry["speaker_a"], entry["speaker_b"]} == {"A", "B"}
+    assert entry["effective_threshold"] == pytest.approx(
+        DEFAULT_SPEAKER_MERGE_NO_OVERLAP_SIMILARITY_THRESHOLD
+    )
     assert diagnostics["merges_applied"] == merge_map
     assert diagnostics["centroids_computed"] == ["A", "B"]
     assert diagnostics["speakers_found"] == ["A", "B"]
+
+
+def test_merge_relaxed_threshold_no_overlap() -> None:
+    """similarity=0.75, no overlap, strict=0.80, relaxed=0.70 -> MERGE."""
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 6.0, 11.0),
+    ]
+    sim = 0.75
+    complement = math.sqrt(1.0 - sim * sim)
+    model = _make_embedding_model(
+        {"A": [1.0, 0.0], "B": [sim, complement]},
+        {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
+    )
+    updated, merge_map, diag = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=model,
+        similarity_threshold=0.80,
+        no_overlap_similarity_threshold=0.70,
+    )
+    assert merge_map  # merged
+    assert len({row["speaker"] for row in updated}) == 1
+    merged_entry = next(
+        e for e in diag["pairwise_scores"] if e["action"] == "merged"
+    )
+    assert merged_entry["effective_threshold"] == pytest.approx(0.70)
+
+
+def test_no_merge_strict_threshold_with_overlap() -> None:
+    """similarity=0.85, overlap=true -> NOT MERGED (overlap blocks)."""
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 2.0, 7.0),  # overlaps with A
+    ]
+    sim = 0.85
+    complement = math.sqrt(1.0 - sim * sim)
+    model = _make_embedding_model(
+        {"A": [1.0, 0.0], "B": [sim, complement]},
+        {"A": [(0.0, 5.0)], "B": [(2.0, 7.0)]},
+    )
+    updated, merge_map, diag = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=model,
+        similarity_threshold=0.80,
+        no_overlap_similarity_threshold=0.70,
+    )
+    assert merge_map == {}
+    assert {row["speaker"] for row in updated} == {"A", "B"}
+    overlap_entry = next(
+        e for e in diag["pairwise_scores"] if e["action"] == "skipped_overlap"
+    )
+    assert overlap_entry["overlap"] is True
+    assert overlap_entry["effective_threshold"] == pytest.approx(0.80)
+
+
+def test_no_merge_between_thresholds_with_overlap() -> None:
+    """similarity=0.75, overlap=true, strict=0.80, relaxed=0.70.
+
+    The pair passes the relaxed guard (0.75 >= 0.70), but overlap pushes
+    the effective threshold to 0.80, and 0.75 < 0.80 -> skipped.
+    """
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 2.0, 7.0),  # overlaps with A
+    ]
+    sim = 0.75
+    complement = math.sqrt(1.0 - sim * sim)
+    model = _make_embedding_model(
+        {"A": [1.0, 0.0], "B": [sim, complement]},
+        {"A": [(0.0, 5.0)], "B": [(2.0, 7.0)]},
+    )
+    updated, merge_map, diag = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=model,
+        similarity_threshold=0.80,
+        no_overlap_similarity_threshold=0.70,
+    )
+    assert merge_map == {}
+    assert {row["speaker"] for row in updated} == {"A", "B"}
+    low_entry = next(
+        e for e in diag["pairwise_scores"] if e["action"] == "skipped_low_similarity"
+    )
+    assert low_entry["overlap"] is True
+    assert low_entry["effective_threshold"] == pytest.approx(0.80)
+
+
+def test_no_merge_below_relaxed_threshold() -> None:
+    """similarity=0.65, no overlap, relaxed=0.70 -> NOT MERGED."""
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 6.0, 11.0),
+    ]
+    sim = 0.65
+    complement = math.sqrt(1.0 - sim * sim)
+    model = _make_embedding_model(
+        {"A": [1.0, 0.0], "B": [sim, complement]},
+        {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
+    )
+    updated, merge_map, diag = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=model,
+        similarity_threshold=0.80,
+        no_overlap_similarity_threshold=0.70,
+    )
+    assert merge_map == {}
+    assert {row["speaker"] for row in updated} == {"A", "B"}
+    low_entry = next(
+        e for e in diag["pairwise_scores"] if e["action"] == "skipped_low_similarity"
+    )
+    assert low_entry["effective_threshold"] == pytest.approx(0.70)
+
+
+def test_real_case_0786_merges_with_dual_threshold() -> None:
+    """Exact Plaud case: similarity=0.786, no overlap, strict=0.80, relaxed=0.70.
+
+    Before this change the pair was skipped (0.786 < 0.80). With the relaxed
+    no-overlap threshold (0.70) and no temporal overlap, it must now merge.
+    """
+    diar_segments = [
+        _segment("SPEAKER_00", 0.0, 120.0),
+        _segment("SPEAKER_01", 130.0, 250.0),
+    ]
+    sim = 0.786
+    complement = math.sqrt(1.0 - sim * sim)
+    model = _make_embedding_model(
+        {"SPEAKER_00": [1.0, 0.0], "SPEAKER_01": [sim, complement]},
+        {"SPEAKER_00": [(0.0, 120.0)], "SPEAKER_01": [(130.0, 250.0)]},
+    )
+    updated, merge_map, diag = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=model,
+        similarity_threshold=0.80,
+        no_overlap_similarity_threshold=0.70,
+    )
+    assert merge_map  # merged
+    assert len({row["speaker"] for row in updated}) == 1
+    merged_entry = next(
+        e for e in diag["pairwise_scores"] if e["action"] == "merged"
+    )
+    assert merged_entry["similarity"] == pytest.approx(sim, abs=0.01)
+    assert merged_entry["effective_threshold"] == pytest.approx(0.70)
 
 
 def test_diagnostics_no_model() -> None:
