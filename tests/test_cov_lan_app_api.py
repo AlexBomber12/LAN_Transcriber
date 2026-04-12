@@ -364,15 +364,10 @@ def test_api_force_reprocess_returns_409_when_job_active(
 
     monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
 
-    def _unexpected_clear(*_args: Any, **_kwargs: Any) -> list[str]:
-        raise AssertionError("clear_derived_artifacts must not run when job is active")
-
-    monkeypatch.setattr(api, "clear_derived_artifacts", _unexpected_clear)
-
     def _raise_dupe(*_args: Any, **kwargs: Any) -> Any:
-        # enqueue_recording_job detects the existing job atomically and raises
-        # before ever invoking the before_queue_push callback.
-        assert "before_queue_push" in kwargs
+        # enqueue_recording_job atomically detects existing active jobs and
+        # raises before any destructive work happens.
+        assert kwargs.get("force_reprocess") is True
         raise DuplicateRecordingJobError(
             recording_id="rec-1",
             job_id="existing-job-xyz",
@@ -386,39 +381,6 @@ def test_api_force_reprocess_returns_409_when_job_active(
     detail = response.json()["detail"]
     assert detail["existing_job_id"] == "existing-job-xyz"
     assert "already queued or started" in detail["message"].lower()
-
-
-def test_api_force_reprocess_maps_clear_errors_to_500(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from lan_app.jobs import RecordingJob
-    from lan_app.ops import ClearDerivedArtifactsError
-
-    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
-
-    def _raise_clear(*_args: Any, **_kwargs: Any) -> list[str]:
-        raise ClearDerivedArtifactsError("permission denied")
-
-    monkeypatch.setattr(api, "clear_derived_artifacts", _raise_clear)
-
-    def _fake_enqueue(
-        *_args: Any,
-        before_queue_push: Any = None,
-        **_kwargs: Any,
-    ) -> RecordingJob:
-        # Simulate the real enqueue_recording_job contract: the callback runs
-        # after the atomic DB reservation but before the Redis push, and its
-        # exceptions propagate to the caller.
-        assert before_queue_push is not None
-        before_queue_push()
-        raise AssertionError("unreachable: callback must have raised")
-
-    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
-    client = TestClient(api.app)
-
-    response = client.post("/api/recordings/rec-1/actions/force-reprocess")
-    assert response.status_code == 500
-    assert response.json()["detail"] == "permission denied"
 
 
 @pytest.mark.parametrize(
@@ -436,7 +398,6 @@ def test_api_force_reprocess_maps_enqueue_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
-    monkeypatch.setattr(api, "clear_derived_artifacts", lambda *_a, **_kw: [])
 
     def _raise(*_args: Any, **_kwargs: Any) -> Any:
         raise raised

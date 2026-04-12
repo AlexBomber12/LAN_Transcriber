@@ -73,7 +73,6 @@ from .db import (
     SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED,
     VOICE_SAMPLE_SOURCE_TRUSTED_SAMPLE,
     acknowledge_recording_cancel_request,
-    clear_recording_pipeline_stages,
     clear_recording_progress,
     create_calendar_source,
     create_glossary_entry,
@@ -122,12 +121,7 @@ from .jobs import (
     enqueue_recording_job,
     purge_pending_recording_jobs,
 )
-from .ops import (
-    ClearDerivedArtifactsError,
-    RecordingDeleteError,
-    clear_derived_artifacts,
-    delete_recording_with_artifacts,
-)
+from .ops import RecordingDeleteError, delete_recording_with_artifacts
 from .pipeline_stages import PIPELINE_STAGE_DONE_STATUSES, stage_order
 from .routing import refresh_recording_routing, train_routing_from_manual_selection
 from .speaker_bank import DEFAULT_ASSIGNMENT_THRESHOLD, merge_canonical_speakers
@@ -7089,35 +7083,17 @@ async def ui_action_force_reprocess(
 ) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
-
-    def _clear_before_push() -> None:
-        # Preserve the sanitize_audio stage row so the worker can skip
-        # ffmpeg sanitization on resume; the files audio_sanitized.wav and
-        # audio_sanitize.json are preserved by clear_derived_artifacts for
-        # the same reason.
-        clear_recording_pipeline_stages(
-            recording_id,
-            from_stage="precheck",
-            settings=_settings,
-        )
-        clear_recording_progress(recording_id, settings=_settings)
-        clear_derived_artifacts(recording_id, settings=_settings)
-
     try:
         enqueue_recording_job(
             recording_id,
-            before_queue_push=_clear_before_push,
+            force_reprocess=True,
             settings=_settings,
         )
     except DuplicateRecordingJobError as exc:
-        # enqueue_recording_job detects duplicates before the callback runs,
-        # so derived/ is left untouched when another job is already active.
         return HTMLResponse(
             f"Force reprocess skipped: precheck job already active ({exc.job_id}).",
             status_code=409,
         )
-    except ClearDerivedArtifactsError as exc:
-        return HTMLResponse(f"Force reprocess failed: {exc}", status_code=500)
     except Exception as exc:
         return HTMLResponse(f"Force reprocess failed: {exc}", status_code=503)
     return _ui_recording_action_response(

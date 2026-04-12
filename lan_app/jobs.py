@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any
 from uuid import uuid4
 
 from redis import Redis
@@ -20,7 +20,6 @@ from .db import (
     clear_recording_cancel_request,
     clear_recording_pipeline_stages,
     clear_recording_progress,
-    connect,
     create_job_if_no_active_for_recording,
     create_job,
     fail_job,
@@ -49,23 +48,6 @@ class DuplicateRecordingJobError(ValueError):
 def _validate_job_type(job_type: str) -> None:
     if job_type not in JOB_TYPES:
         raise ValueError(f"Unsupported job type: {job_type}")
-
-
-def _delete_job_row(job_id: str, *, settings: AppSettings) -> None:
-    """Raw-SQL backstop used when :func:`fail_job` cannot mark a row terminal.
-
-    This exists specifically for the ``before_queue_push`` failure path:
-    the job row is already reserved in the DB but was never pushed to
-    Redis, so the only terminal states available are FAILED (via
-    ``fail_job``) or removal. If ``fail_job`` itself raises, we fall back
-    to this direct DELETE so that an orphan QUEUED reservation cannot
-    block all future enqueue attempts for the recording indefinitely.
-    """
-
-    init_db(settings)
-    with connect(settings) as conn:
-        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-        conn.commit()
 
 
 @dataclass(frozen=True)
@@ -162,7 +144,7 @@ def enqueue_recording_job(
     *,
     job_type: str = DEFAULT_REQUEUE_JOB_TYPE,
     reset_pipeline_state: bool = False,
-    before_queue_push: Callable[[], None] | None = None,
+    force_reprocess: bool = False,
     settings: AppSettings | None = None,
 ) -> RecordingJob:
     cfg = settings or AppSettings()
@@ -201,34 +183,14 @@ def enqueue_recording_job(
         clear_recording_pipeline_stages(recording_id, settings=cfg)
         clear_recording_progress(recording_id, settings=cfg)
 
-    if before_queue_push is not None:
-        # Run caller-supplied cleanup (e.g. Force Reprocess deleting derived
-        # artifacts) AFTER the atomic DB reservation that rejects duplicates,
-        # but BEFORE the Redis push so the worker never observes a job whose
-        # cleanup is still in flight. On failure we guarantee the DB row
-        # reaches a terminal state (FAILED via fail_job, or removed via a
-        # direct DELETE backstop), so a cleanup crash cannot orphan the
-        # dedupe path with a stale QUEUED row that blocks every future
-        # enqueue for the recording.
-        try:
-            before_queue_push()
-        except Exception as callback_exc:
-            try:
-                fail_job(
-                    job_id,
-                    error=f"pre-enqueue callback failed: {callback_exc}",
-                    settings=cfg,
-                )
-            except Exception:
-                try:
-                    _delete_job_row(job_id, settings=cfg)
-                except Exception as backstop_exc:
-                    raise RuntimeError(
-                        f"pre-enqueue callback failed ({callback_exc!r}); "
-                        f"additionally failed to clean up reserved job row "
-                        f"{job_id!r}: {backstop_exc!r}"
-                    ) from callback_exc
-            raise
+    # Forward force_reprocess to the worker as a process_job kwarg so all
+    # destructive cleanup (derived files + stage rows) happens worker-side
+    # AFTER the job has been safely accepted by Redis. Transient queue
+    # outages therefore leave the recording entirely intact instead of
+    # leaving it with cleared outputs under its old status.
+    forwarded_kwargs: dict[str, Any] = {}
+    if force_reprocess:
+        forwarded_kwargs["force_reprocess"] = True
 
     queue = get_queue(cfg)
     try:
@@ -239,6 +201,7 @@ def enqueue_recording_job(
             job_type,
             job_id=job_id,
             job_timeout=cfg.rq_job_timeout_seconds,
+            **forwarded_kwargs,
         )
     except Exception as exc:
         # Keep DB queue state terminal when Redis/RQ enqueue fails.

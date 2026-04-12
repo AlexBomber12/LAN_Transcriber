@@ -1178,7 +1178,9 @@ def test_api_requeue_dedupes_active_precheck_job(tmp_path: Path, monkeypatch):
     assert "already queued or started" in detail["message"].lower()
 
 
-def test_api_force_reprocess_clears_derived_and_enqueues(tmp_path: Path, monkeypatch):
+def test_api_force_reprocess_enqueues_with_force_reprocess_flag(
+    tmp_path: Path, monkeypatch
+):
     cfg = _test_settings(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     init_db(cfg)
@@ -1189,18 +1191,21 @@ def test_api_force_reprocess_clears_derived_and_enqueues(tmp_path: Path, monkeyp
         status=RECORDING_STATUS_READY,
         settings=cfg,
     )
+    # Derived artifacts from a previous successful run: the API must NOT
+    # touch these — cleanup is deferred to the worker so a Redis failure
+    # cannot destroy user-visible data under the recording's old status.
     derived = cfg.recordings_root / "rec-force-api-1" / "derived"
     derived.mkdir(parents=True, exist_ok=True)
     (derived / "audio_sanitized.wav").write_bytes(b"\x00")
     (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
     (derived / "summary.json").write_text("{}", encoding="utf-8")
-    (derived / "transcript.txt").write_text("old", encoding="utf-8")
-    snippets = derived / "snippets"
-    snippets.mkdir(parents=True, exist_ok=True)
-    (snippets / "snippet.wav").write_bytes(b"\x00")
+
+    captured: dict[str, object] = {}
 
     class _FakeQueue:
-        def enqueue(self, *_args, **_kwargs):
+        def enqueue(self, _func, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
             return None
 
     monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _FakeQueue())
@@ -1213,18 +1218,20 @@ def test_api_force_reprocess_clears_derived_and_enqueues(tmp_path: Path, monkeyp
     assert payload["reprocessed"] is True
     assert payload["job_type"] == JOB_TYPE_PRECHECK
     assert payload["job_id"]
-    cleared = payload["cleared_artifacts"]
-    assert "summary.json" in cleared
-    assert "transcript.txt" in cleared
-    assert "snippets" in cleared
-    assert "audio_sanitized.wav" not in cleared
-    assert "audio_sanitize.json" not in cleared
+    # cleared_artifacts must not appear in the response now that cleanup is
+    # performed asynchronously on the worker side.
+    assert "cleared_artifacts" not in payload
 
+    # Derived files must still be on disk: the API path is now non-destructive.
     assert (derived / "audio_sanitized.wav").exists()
     assert (derived / "audio_sanitize.json").exists()
-    assert not (derived / "summary.json").exists()
-    assert not (derived / "transcript.txt").exists()
-    assert not (derived / "snippets").exists()
+    assert (derived / "summary.json").exists()
+
+    # The force_reprocess flag must be forwarded to process_job via the RQ
+    # enqueue call so the worker knows to perform the destructive cleanup
+    # at the start of the job.
+    assert captured["kwargs"].get("force_reprocess") is True
+    assert captured["args"][1] == "rec-force-api-1"
 
     rec_after = get_recording("rec-force-api-1", settings=cfg)
     assert rec_after is not None
@@ -1237,7 +1244,7 @@ def test_api_force_reprocess_clears_derived_and_enqueues(tmp_path: Path, monkeyp
     assert any(row["id"] == payload["job_id"] for row in jobs_after)
 
 
-def test_api_force_reprocess_preserves_sanitize_audio_stage_row(
+def test_process_job_force_reprocess_cleans_up_before_pipeline(
     tmp_path: Path, monkeypatch
 ):
     from lan_app.db import (
@@ -1246,60 +1253,228 @@ def test_api_force_reprocess_preserves_sanitize_audio_stage_row(
     )
 
     cfg = _test_settings(tmp_path)
-    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
     init_db(cfg)
     create_recording(
-        "rec-force-stage-keep",
+        "rec-worker-force-1",
         source="test",
-        source_filename="keep.mp3",
-        status=RECORDING_STATUS_READY,
+        source_filename="worker-force.mp3",
+        status=RECORDING_STATUS_QUEUED,
         settings=cfg,
     )
-    # Simulate a completed pipeline so we can assert which stage rows the
-    # force-reprocess path preserves vs. clears.
+    create_job(
+        "job-worker-force-1",
+        recording_id="rec-worker-force-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
     for stage_name in (
         "sanitize_audio",
         "precheck",
         "asr",
         "language_analysis",
-        "speaker_turns",
         "llm_extract",
         "metrics",
     ):
         mark_recording_pipeline_stage_completed(
-            "rec-force-stage-keep",
+            "rec-worker-force-1",
             stage_name=stage_name,
             settings=cfg,
         )
 
-    derived = cfg.recordings_root / "rec-force-stage-keep" / "derived"
+    derived = cfg.recordings_root / "rec-worker-force-1" / "derived"
     derived.mkdir(parents=True, exist_ok=True)
     (derived / "audio_sanitized.wav").write_bytes(b"\x00")
     (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
     (derived / "summary.json").write_text("{}", encoding="utf-8")
+    (derived / "transcript.txt").write_text("old", encoding="utf-8")
+    snippets = derived / "snippets"
+    snippets.mkdir(parents=True, exist_ok=True)
+    (snippets / "snippet.wav").write_bytes(b"\x00")
 
-    class _FakeQueue:
+    # Snapshot the state the pipeline sees when it starts running, so we
+    # can assert the cleanup ran BEFORE _run_precheck_pipeline.
+    observed: dict[str, object] = {}
+
+    def _capture_pipeline_state(*, recording_id, settings, log_path):
+        observed["stage_names"] = {
+            row["stage_name"]
+            for row in list_recording_pipeline_stages(recording_id, settings=settings)
+        }
+        observed["derived_files"] = sorted(
+            p.name for p in (settings.recordings_root / recording_id / "derived").iterdir()
+        )
+        return worker_tasks.PipelineTerminalState(status=RECORDING_STATUS_READY)
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._run_precheck_pipeline", _capture_pipeline_state
+    )
+
+    result = process_job(
+        "job-worker-force-1",
+        "rec-worker-force-1",
+        JOB_TYPE_PRECHECK,
+        force_reprocess=True,
+    )
+
+    assert result.get("status") != "ignored"
+    # sanitize_audio stage row + its files must survive so the pipeline
+    # resume loop can skip the expensive ffmpeg sanitization step.
+    assert observed["stage_names"] == {"sanitize_audio"}
+    assert "audio_sanitized.wav" in observed["derived_files"]
+    assert "audio_sanitize.json" in observed["derived_files"]
+    # Every derived output downstream of sanitize must have been wiped.
+    assert "summary.json" not in observed["derived_files"]
+    assert "transcript.txt" not in observed["derived_files"]
+    assert "snippets" not in observed["derived_files"]
+
+
+def test_apply_force_reprocess_cleanup_swallows_log_ioerror(
+    tmp_path: Path, monkeypatch
+):
+    from lan_app.worker_tasks import _apply_force_reprocess_cleanup
+
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-cleanup-log-fail",
+        source="test",
+        source_filename="log-fail.mp3",
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-cleanup-log-fail" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "audio_sanitized.wav").write_bytes(b"\x00")
+    (derived / "summary.json").write_text("{}", encoding="utf-8")
+
+    # Simulate an OSError while appending the cleanup-summary line. The
+    # helper must NOT propagate logging failures — the destructive cleanup
+    # already succeeded and the pipeline must continue.
+    def _fail_log(*_args, **_kwargs):
+        raise OSError("log unavailable")
+
+    monkeypatch.setattr("lan_app.worker_tasks._append_step_log", _fail_log)
+
+    log_path = cfg.recordings_root / "rec-cleanup-log-fail" / "logs" / "step-precheck.log"
+    _apply_force_reprocess_cleanup(
+        "rec-cleanup-log-fail",
+        settings=cfg,
+        log_path=log_path,
+    )
+    assert (derived / "audio_sanitized.wav").exists()
+    assert not (derived / "summary.json").exists()
+
+
+def test_process_job_force_reprocess_wraps_clear_errors(tmp_path: Path, monkeypatch):
+    from lan_app.ops import ClearDerivedArtifactsError
+
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+    # Pin retries to 1 so a cleanup failure on the first attempt propagates
+    # directly, instead of the worker retrying (which would re-enter the
+    # try-loop with attempt != 1 and bypass cleanup).
+    monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "1")
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-force-clear-fail",
+        source="test",
+        source_filename="clear-fail.mp3",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-force-clear-fail",
+        recording_id="rec-worker-force-clear-fail",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+
+    def _raise_clear(*_args, **_kwargs):
+        raise ClearDerivedArtifactsError("cleanup exploded")
+
+    monkeypatch.setattr("lan_app.worker_tasks.clear_derived_artifacts", _raise_clear)
+
+    def _unexpected_pipeline(*_args, **_kwargs):
+        raise AssertionError(
+            "_run_precheck_pipeline must not run when cleanup fails"
+        )
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._run_precheck_pipeline", _unexpected_pipeline
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        process_job(
+            "job-worker-force-clear-fail",
+            "rec-worker-force-clear-fail",
+            JOB_TYPE_PRECHECK,
+            force_reprocess=True,
+        )
+    assert "force_reprocess cleanup failed" in str(exc_info.value)
+    assert "cleanup exploded" in str(exc_info.value)
+
+
+def test_api_force_reprocess_preserves_user_data_on_redis_failure(
+    tmp_path: Path, monkeypatch
+):
+    """Transient Redis failures must leave derived artifacts untouched."""
+
+    from lan_app.db import mark_recording_pipeline_stage_completed
+
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-force-redis-down",
+        source="test",
+        source_filename="redis-down.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    for stage_name in ("sanitize_audio", "precheck", "asr", "llm_extract"):
+        mark_recording_pipeline_stage_completed(
+            "rec-force-redis-down",
+            stage_name=stage_name,
+            settings=cfg,
+        )
+    derived = cfg.recordings_root / "rec-force-redis-down" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "audio_sanitized.wav").write_bytes(b"\x00")
+    (derived / "summary.json").write_text("{}", encoding="utf-8")
+    (derived / "transcript.txt").write_text("old", encoding="utf-8")
+
+    class _BrokenQueue:
         def enqueue(self, *_args, **_kwargs):
-            return None
+            raise RuntimeError("redis down")
 
-    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _FakeQueue())
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _BrokenQueue())
 
     client = TestClient(api.app)
     response = client.post(
-        "/api/recordings/rec-force-stage-keep/actions/force-reprocess"
+        "/api/recordings/rec-force-redis-down/actions/force-reprocess"
     )
-    assert response.status_code == 200
+    assert response.status_code == 503
+    assert "redis down" in response.json()["detail"]
 
-    remaining_stages = {
-        row["stage_name"]
-        for row in list_recording_pipeline_stages(
-            "rec-force-stage-keep", settings=cfg
-        )
-    }
-    # sanitize_audio must survive so the worker's resume logic skips the
-    # expensive ffmpeg sanitization step; every downstream stage must be
-    # cleared so the pipeline re-runs from precheck onwards.
-    assert remaining_stages == {"sanitize_audio"}
+    # CRITICAL: recording status must still be Ready (not Queued), and
+    # every derived file must still be on disk — the API path is
+    # non-destructive so a transient queue outage cannot destroy user data.
+    rec_after = get_recording("rec-force-redis-down", settings=cfg)
+    assert rec_after is not None
+    assert rec_after["status"] == RECORDING_STATUS_READY
+    assert (derived / "audio_sanitized.wav").exists()
+    assert (derived / "summary.json").exists()
+    assert (derived / "transcript.txt").exists()
 
 
 def test_api_force_reprocess_returns_404_for_unknown_recording(tmp_path: Path, monkeypatch):
@@ -1369,131 +1544,68 @@ def test_api_alias_requires_auth_when_token_enabled(tmp_path: Path, monkeypatch)
     assert aliases.load_aliases(alias_path).get("S1") == "Alice"
 
 
-def test_enqueue_before_queue_push_failure_fails_job_and_skips_queue(
+def test_enqueue_forwards_force_reprocess_flag_to_queue(
     tmp_path: Path, monkeypatch
 ):
     cfg = _test_settings(tmp_path)
     init_db(cfg)
     create_recording(
-        "rec-before-push-fail-1",
+        "rec-force-forward-1",
         source="test",
-        source_filename="before-push.mp3",
+        source_filename="forward.mp3",
         settings=cfg,
     )
 
-    class _TripwireQueue:
-        def enqueue(self, *_args, **_kwargs):
-            raise AssertionError(
-                "queue.enqueue must not be called when before_queue_push fails"
-            )
+    captured: dict[str, object] = {}
 
-    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _TripwireQueue())
+    class _CapturingQueue:
+        def enqueue(self, _func, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return None
 
-    def _failing_callback() -> None:
-        raise RuntimeError("cleanup exploded")
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _CapturingQueue())
 
-    with pytest.raises(RuntimeError) as exc_info:
-        enqueue_recording_job(
-            "rec-before-push-fail-1",
-            job_type=JOB_TYPE_PRECHECK,
-            reset_pipeline_state=True,
-            before_queue_push=_failing_callback,
-            settings=cfg,
-        )
-    assert "cleanup exploded" in str(exc_info.value)
-
-    jobs, total = list_jobs(settings=cfg, recording_id="rec-before-push-fail-1")
-    assert total == 1
-    assert jobs[0]["status"] == JOB_STATUS_FAILED
-    assert "pre-enqueue callback failed" in jobs[0]["error"]
-    assert "cleanup exploded" in jobs[0]["error"]
+    enqueue_recording_job(
+        "rec-force-forward-1",
+        job_type=JOB_TYPE_PRECHECK,
+        force_reprocess=True,
+        settings=cfg,
+    )
+    assert captured["kwargs"].get("force_reprocess") is True
+    # Reserved RQ meta kwargs must still be present.
+    assert "job_id" in captured["kwargs"]
+    assert "job_timeout" in captured["kwargs"]
 
 
-def test_enqueue_before_queue_push_failure_deletes_row_when_fail_job_errors(
-    tmp_path: Path, monkeypatch
-):
+def test_enqueue_omits_force_reprocess_kwarg_when_false(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     init_db(cfg)
     create_recording(
-        "rec-before-push-fail-2",
+        "rec-force-forward-2",
         source="test",
-        source_filename="before-push-2.mp3",
+        source_filename="forward-default.mp3",
         settings=cfg,
     )
 
-    class _TripwireQueue:
-        def enqueue(self, *_args, **_kwargs):
-            raise AssertionError("queue must not be used")
+    captured: dict[str, object] = {}
 
-    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _TripwireQueue())
+    class _CapturingQueue:
+        def enqueue(self, _func, *args, **kwargs):
+            captured["kwargs"] = kwargs
+            return None
 
-    def _broken_fail_job(*_args, **_kwargs):
-        raise RuntimeError("fail_job unavailable")
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _CapturingQueue())
 
-    monkeypatch.setattr("lan_app.jobs.fail_job", _broken_fail_job)
-
-    def _failing_callback() -> None:
-        raise ValueError("cleanup busted")
-
-    # When fail_job breaks, the direct-DELETE backstop must remove the
-    # reserved row so future enqueue attempts are not blocked by an orphan
-    # QUEUED reservation.
-    with pytest.raises(ValueError, match="cleanup busted"):
-        enqueue_recording_job(
-            "rec-before-push-fail-2",
-            job_type=JOB_TYPE_PRECHECK,
-            before_queue_push=_failing_callback,
-            settings=cfg,
-        )
-    jobs, total = list_jobs(settings=cfg, recording_id="rec-before-push-fail-2")
-    assert total == 0
-    assert jobs == []
-
-
-def test_enqueue_before_queue_push_failure_compound_error_when_backstop_fails(
-    tmp_path: Path, monkeypatch
-):
-    cfg = _test_settings(tmp_path)
-    init_db(cfg)
-    create_recording(
-        "rec-before-push-fail-3",
-        source="test",
-        source_filename="before-push-3.mp3",
+    enqueue_recording_job(
+        "rec-force-forward-2",
+        job_type=JOB_TYPE_PRECHECK,
         settings=cfg,
     )
-
-    class _TripwireQueue:
-        def enqueue(self, *_args, **_kwargs):
-            raise AssertionError("queue must not be used")
-
-    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _TripwireQueue())
-    monkeypatch.setattr(
-        "lan_app.jobs.fail_job",
-        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("fail_job broke")),
-    )
-    monkeypatch.setattr(
-        "lan_app.jobs._delete_job_row",
-        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("delete broke")),
-    )
-
-    def _failing_callback() -> None:
-        raise ValueError("cleanup busted")
-
-    # Both fail_job and the direct-DELETE backstop raise, so the caller must
-    # see a compound RuntimeError (no silent orphan reservation).
-    with pytest.raises(RuntimeError) as exc_info:
-        enqueue_recording_job(
-            "rec-before-push-fail-3",
-            job_type=JOB_TYPE_PRECHECK,
-            before_queue_push=_failing_callback,
-            settings=cfg,
-        )
-    message = str(exc_info.value)
-    assert "pre-enqueue callback failed" in message
-    assert "cleanup busted" in message
-    assert "delete broke" in message
-    assert isinstance(exc_info.value.__cause__, ValueError)
-    assert "cleanup busted" in str(exc_info.value.__cause__)
+    # When force_reprocess is left at its False default the flag must not be
+    # forwarded at all, so the worker-side default continues to apply and
+    # existing (non-force) requeue behavior is bit-for-bit unchanged.
+    assert "force_reprocess" not in captured["kwargs"]
 
 
 def test_enqueue_marks_job_failed_when_redis_enqueue_fails(tmp_path: Path, monkeypatch):

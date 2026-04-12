@@ -34,8 +34,6 @@ from .calendar.ics import validate_ics_url
 from .calendar.matching import refresh_recording_calendar_match
 from .calendar.service import CalendarSyncError, redacted_calendar_source, sync_calendar_source
 from .db import (
-    clear_recording_pipeline_stages,
-    clear_recording_progress,
     create_calendar_source,
     create_recording,
     delete_recording,
@@ -61,12 +59,7 @@ from .healthchecks import (
     collect_health_checks,
 )
 from .ops import run_retention_cleanup
-from .ops import (
-    ClearDerivedArtifactsError,
-    RecordingDeleteError,
-    clear_derived_artifacts,
-    delete_recording_with_artifacts,
-)
+from .ops import RecordingDeleteError, delete_recording_with_artifacts
 from .reaper import run_stuck_job_reaper_once
 from .uploads import (
     ALLOWED_UPLOAD_EXTENSIONS,
@@ -360,31 +353,14 @@ async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
     if get_recording(recording_id, settings=_settings) is None:
         raise HTTPException(status_code=404, detail="Recording not found")
 
-    cleared: list[str] = []
-
-    def _clear_before_push() -> None:
-        # Preserve the sanitize_audio stage row (order 10) so the worker's
-        # resume logic can skip ffmpeg sanitization — its output files
-        # (audio_sanitized.wav / audio_sanitize.json) are deterministic given
-        # the raw input and are the only artifacts we intentionally keep.
-        clear_recording_pipeline_stages(
-            recording_id,
-            from_stage="precheck",
-            settings=_settings,
-        )
-        clear_recording_progress(recording_id, settings=_settings)
-        cleared.extend(clear_derived_artifacts(recording_id, settings=_settings))
-
     try:
         job = enqueue_recording_job(
             recording_id,
             job_type=DEFAULT_REQUEUE_JOB_TYPE,
-            before_queue_push=_clear_before_push,
+            force_reprocess=True,
             settings=_settings,
         )
     except DuplicateRecordingJobError as exc:
-        # Duplicate is detected by enqueue_recording_job before the callback
-        # runs, so derived/ is untouched when another job is already active.
         raise HTTPException(
             status_code=409,
             detail={
@@ -392,8 +368,6 @@ async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
                 "existing_job_id": exc.job_id,
             },
         )
-    except ClearDerivedArtifactsError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except RecordingNotFoundError:
         raise HTTPException(status_code=404, detail="Recording not found")
     except ValueError as exc:
@@ -401,12 +375,13 @@ async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}")
 
+    # Derived-artifact cleanup is deferred to the worker to avoid destroying
+    # user-visible data when the Redis push fails transiently.
     return {
         "recording_id": recording_id,
         "job_id": job.job_id,
         "job_type": job.job_type,
         "reprocessed": True,
-        "cleared_artifacts": cleared,
     }
 
 

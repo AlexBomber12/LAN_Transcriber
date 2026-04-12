@@ -130,6 +130,7 @@ from .db import (
     upsert_recording_llm_chunk_state,
 )
 from .diarization_loader import load_pyannote_pipeline
+from .ops import ClearDerivedArtifactsError, clear_derived_artifacts
 from .pipeline_stages import (
     PIPELINE_STAGE_DEFINITIONS,
     PIPELINE_STAGE_DONE_STATUSES,
@@ -4181,7 +4182,47 @@ def _run_precheck_pipeline(
     return _terminal_state_from_stage_artifacts(ctx=ctx)
 
 
-def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]:
+def _apply_force_reprocess_cleanup(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+    log_path: Path,
+) -> None:
+    """Clear stage rows, progress and derived artifacts for a force reprocess.
+
+    This is the destructive side of the Force Full Reprocess action. It
+    runs INSIDE the worker (not inside the enqueue path) so that a
+    transient Redis outage during ``queue.enqueue`` leaves the recording
+    entirely intact. The ``sanitize_audio`` stage row (order 10) plus its
+    output files (``audio_sanitized.wav`` / ``audio_sanitize.json``) are
+    deliberately preserved so the resume loop in :func:`_run_precheck_pipeline`
+    can skip ffmpeg sanitization.
+    """
+
+    clear_recording_pipeline_stages(
+        recording_id,
+        from_stage="precheck",
+        settings=settings,
+    )
+    clear_recording_progress(recording_id, settings=settings)
+    deleted = clear_derived_artifacts(recording_id, settings=settings)
+    try:
+        _append_step_log(
+            log_path,
+            "force_reprocess cleanup deleted "
+            f"{len(deleted)} derived entries (kept sanitize outputs)",
+        )
+    except OSError:
+        pass
+
+
+def process_job(
+    job_id: str,
+    recording_id: str,
+    job_type: str,
+    *,
+    force_reprocess: bool = False,
+) -> dict[str, str]:
     """Execute a queue job and persist lifecycle state transitions."""
 
     if job_type not in JOB_TYPES:
@@ -4302,6 +4343,24 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                 }:
                     raise ValueError(f"Recording not found: {recording_id}")
             _append_step_log(log_path, f"started job={job_id} type={job_type}")
+
+            if force_reprocess and attempt == 1:
+                # Only run the destructive cleanup on the first attempt: if a
+                # later retry re-ran it, we would wipe stages that the retry
+                # had already re-executed successfully. Failing to clean up on
+                # the first attempt fails the job outright, which is the
+                # recoverable outcome (the user can trigger force reprocess
+                # again, which mints a fresh job id).
+                try:
+                    _apply_force_reprocess_cleanup(
+                        recording_id=recording_id,
+                        settings=settings,
+                        log_path=log_path,
+                    )
+                except ClearDerivedArtifactsError as exc:
+                    raise RuntimeError(
+                        f"force_reprocess cleanup failed: {exc}"
+                    ) from exc
 
             terminal_state = _run_precheck_pipeline(
                 recording_id=recording_id,
