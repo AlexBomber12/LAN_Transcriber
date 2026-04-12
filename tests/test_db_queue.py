@@ -1370,6 +1370,102 @@ def test_apply_force_reprocess_cleanup_swallows_log_ioerror(
     assert not (derived / "summary.json").exists()
 
 
+def test_process_job_force_reprocess_cleanup_runs_on_every_retry(
+    tmp_path: Path, monkeypatch
+):
+    """Retries must re-run cleanup so stale state can never reach the pipeline."""
+
+    from lan_app.db import mark_recording_pipeline_stage_completed
+
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+    monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "3")
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-force-retry",
+        source="test",
+        source_filename="retry.mp3",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-force-retry",
+        recording_id="rec-worker-force-retry",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+    mark_recording_pipeline_stage_completed(
+        "rec-worker-force-retry",
+        stage_name="sanitize_audio",
+        settings=cfg,
+    )
+    mark_recording_pipeline_stage_completed(
+        "rec-worker-force-retry",
+        stage_name="precheck",
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-worker-force-retry" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "audio_sanitized.wav").write_bytes(b"\x00")
+    (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
+    (derived / "summary.json").write_text("{}", encoding="utf-8")
+
+    cleanup_calls: list[int] = []
+    real_cleanup = worker_tasks._apply_force_reprocess_cleanup
+
+    def _counting_cleanup(recording_id, *, settings, log_path):
+        call_number = len(cleanup_calls) + 1
+        cleanup_calls.append(call_number)
+        real_cleanup(recording_id, settings=settings, log_path=log_path)
+        if call_number == 1:
+            # Simulate attempt 1's pipeline writing a stale partial artifact
+            # after cleanup but before failing. The retry's cleanup must
+            # wipe this file — that is the whole point of this test.
+            (derived / "asr_partial.json").write_text("stale", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._apply_force_reprocess_cleanup",
+        _counting_cleanup,
+    )
+
+    pipeline_calls: list[int] = []
+
+    def _pipeline(*, recording_id, settings, log_path):
+        pipeline_calls.append(len(pipeline_calls) + 1)
+        if len(pipeline_calls) < 2:
+            # First attempt fails with a retryable error so process_job retries.
+            raise RuntimeError("transient pipeline failure")
+        return worker_tasks.PipelineTerminalState(status=RECORDING_STATUS_READY)
+
+    monkeypatch.setattr("lan_app.worker_tasks._run_precheck_pipeline", _pipeline)
+    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda _s: None)
+
+    result = process_job(
+        "job-worker-force-retry",
+        "rec-worker-force-retry",
+        JOB_TYPE_PRECHECK,
+        force_reprocess=True,
+    )
+
+    assert result["status"] == "ok"
+    # Cleanup must have run on both the first attempt AND the retry so that
+    # stale partial-progress state is wiped before every pipeline invocation.
+    assert cleanup_calls == [1, 2]
+    assert pipeline_calls == [1, 2]
+    # Sanitize outputs survive every cleanup pass; the stale partial from
+    # attempt 1 has been wiped by attempt 2's cleanup so the pipeline ran
+    # against a fully-clean state, not the leftover from the first attempt.
+    assert (derived / "audio_sanitized.wav").exists()
+    assert (derived / "audio_sanitize.json").exists()
+    assert not (derived / "asr_partial.json").exists()
+    assert not (derived / "summary.json").exists()
+
+
 def test_process_job_force_reprocess_wraps_clear_errors(tmp_path: Path, monkeypatch):
     from lan_app.ops import ClearDerivedArtifactsError
 

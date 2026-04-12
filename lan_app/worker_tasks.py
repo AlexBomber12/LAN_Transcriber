@@ -4344,13 +4344,20 @@ def process_job(
                     raise ValueError(f"Recording not found: {recording_id}")
             _append_step_log(log_path, f"started job={job_id} type={job_type}")
 
-            if force_reprocess and attempt == 1:
-                # Only run the destructive cleanup on the first attempt: if a
-                # later retry re-ran it, we would wipe stages that the retry
-                # had already re-executed successfully. Failing to clean up on
-                # the first attempt fails the job outright, which is the
-                # recoverable outcome (the user can trigger force reprocess
-                # again, which mints a fresh job id).
+            if force_reprocess:
+                # Run cleanup on EVERY attempt, not just the first: if an
+                # earlier attempt failed after partial progress, a retry must
+                # wipe that partial state and restart from a fully-cleared
+                # pipeline, not resume against stale files. The ops are
+                # idempotent — on the second attempt clear_derived_artifacts
+                # only deletes whatever (if anything) the retry has recreated,
+                # and clear_recording_pipeline_stages(from_stage="precheck")
+                # still preserves the sanitize_audio row so sanitization is
+                # skipped exactly the same way across retries. Skipping the
+                # cleanup on a retry after a cleanup failure would let
+                # _run_precheck_pipeline silently run against partially
+                # cleared state and report success without honoring the
+                # force-reprocess contract.
                 try:
                     _apply_force_reprocess_cleanup(
                         recording_id=recording_id,
