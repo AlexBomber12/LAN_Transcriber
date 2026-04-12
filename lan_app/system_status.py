@@ -17,6 +17,7 @@ from lan_transcriber.gpu_policy import (
 from .config import AppSettings
 from .constants import JOB_STATUS_QUEUED, JOB_STATUS_STARTED
 from .db import get_recording, list_jobs
+from .worker_status import is_worker_status_fresh, read_worker_status
 
 _SPARK_PROBE_TIMEOUT = httpx.Timeout(2.0, connect=0.5)
 
@@ -421,6 +422,40 @@ def _node_status_item(
     }
 
 
+def _worker_gpu_runtime_item(
+    *,
+    settings: AppSettings,
+    gpu_busy: bool,
+    explicit_gpu_requested: bool,
+) -> dict[str, Any] | None:
+    data_root = getattr(settings, "data_root", None)
+    if data_root is None:
+        return None
+    status = read_worker_status(data_root)
+    if status is None:
+        return None
+    if not is_worker_status_fresh(status):
+        return None
+    if bool(status.get("gpu_available")):
+        parsed_count = _parse_int(status.get("device_count")) or 0
+        device_count = max(parsed_count, 1)
+        torch_cuda = str(status.get("torch_cuda_version") or "").strip() or "unknown"
+        return {
+            "label": "GPU runtime",
+            "value": "GPU busy" if gpu_busy else "GPU ready",
+            "detail": f"worker sees {device_count} GPU(s) · CUDA {torch_cuda}",
+            "tone": "busy" if gpu_busy else "healthy",
+        }
+    visible = str(status.get("visible_devices") or "").strip() or "default"
+    torch_cuda = str(status.get("torch_cuda_version") or "").strip() or "none"
+    return {
+        "label": "GPU runtime",
+        "value": "GPU unavailable" if explicit_gpu_requested else "CPU only",
+        "detail": f"worker reports no CUDA · visible={visible} · torch CUDA {torch_cuda}",
+        "tone": "offline" if explicit_gpu_requested else "degraded",
+    }
+
+
 def _gpu_runtime_item(
     *,
     settings: AppSettings,
@@ -432,6 +467,13 @@ def _gpu_runtime_item(
         getattr(settings, "asr_device", None)
     ) or _safe_is_gpu_device(getattr(settings, "diarization_device", None))
     gpu_busy = bool(queue.get("started_total")) and not active_llm
+    worker_item = _worker_gpu_runtime_item(
+        settings=settings,
+        gpu_busy=gpu_busy,
+        explicit_gpu_requested=explicit_gpu_requested,
+    )
+    if worker_item is not None:
+        return worker_item
     torch_cuda = cuda_facts.torch_cuda_version or "none"
     nvidia_smi = _probe_nvidia_smi()
 

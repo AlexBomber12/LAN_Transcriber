@@ -1,0 +1,2162 @@
+diff --git a/artifacts/ci.log b/artifacts/ci.log
+index c630ff4..acf8c7a 100644
+--- a/artifacts/ci.log
++++ b/artifacts/ci.log
+@@ -1,119 +1,3 @@
+-Requirement already satisfied: pip in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (26.0.1)
+-Requirement already satisfied: annotated-types==0.7.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 7)) (0.7.0)
+-Requirement already satisfied: antlr4-python3-runtime==4.9.3 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 9)) (4.9.3)
+-Requirement already satisfied: anyio==4.13.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 11)) (4.13.0)
+-Requirement already satisfied: build==1.4.3 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 15)) (1.4.3)
+-Requirement already satisfied: certifi==2026.2.25 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 17)) (2026.2.25)
+-Requirement already satisfied: charset-normalizer==3.4.7 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 22)) (3.4.7)
+-Requirement already satisfied: click==8.3.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 24)) (8.3.2)
+-Requirement already satisfied: coverage==7.13.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from coverage[toml]==7.13.5->-r ci-requirements.txt (line 29)) (7.13.5)
+-Requirement already satisfied: fastapi==0.116.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 31)) (0.116.1)
+-Requirement already satisfied: h11==0.16.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 33)) (0.16.0)
+-Requirement already satisfied: httpcore==1.0.9 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 37)) (1.0.9)
+-Requirement already satisfied: httpx==0.28.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 39)) (0.28.1)
+-Requirement already satisfied: icalendar==6.3.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 43)) (6.3.1)
+-Requirement already satisfied: idna==3.11 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 48)) (3.11)
+-Requirement already satisfied: iniconfig==2.3.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 53)) (2.3.0)
+-Requirement already satisfied: omegaconf==2.3.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 55)) (2.3.0)
+-Requirement already satisfied: packaging==26.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 57)) (26.0)
+-Requirement already satisfied: pip-tools==7.4.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 61)) (7.4.1)
+-Requirement already satisfied: pluggy==1.6.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 63)) (1.6.0)
+-Requirement already satisfied: prometheus-client==0.25.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 65)) (0.25.0)
+-Requirement already satisfied: pydantic==2.12.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 67)) (2.12.5)
+-Requirement already satisfied: pydantic-core==2.41.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 71)) (2.41.5)
+-Requirement already satisfied: pydantic-settings==2.10.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 73)) (2.10.1)
+-Requirement already satisfied: pyproject-hooks==1.2.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 75)) (1.2.0)
+-Requirement already satisfied: pytest==8.2.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 79)) (8.2.0)
+-Requirement already satisfied: pytest-asyncio==1.1.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 85)) (1.1.0)
+-Requirement already satisfied: pytest-cov==5.0.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 87)) (5.0.0)
+-Requirement already satisfied: pytest-mock==3.14.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 89)) (3.14.1)
+-Requirement already satisfied: python-dateutil==2.9.0.post0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 91)) (2.9.0.post0)
+-Requirement already satisfied: python-dotenv==1.2.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 95)) (1.2.2)
+-Requirement already satisfied: pyyaml==6.0.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 97)) (6.0.2)
+-Requirement already satisfied: recurring-ical-events==3.8.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 101)) (3.8.0)
+-Requirement already satisfied: requests==2.33.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 103)) (2.33.1)
+-Requirement already satisfied: respx==0.22.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from respx[router]==0.22.0->-r ci-requirements.txt (line 105)) (0.22.0)
+-Requirement already satisfied: ruff==0.12.4 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 107)) (0.12.4)
+-Requirement already satisfied: six==1.17.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 109)) (1.17.0)
+-Requirement already satisfied: starlette==0.47.3 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 111)) (0.47.3)
+-Requirement already satisfied: tenacity==9.1.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 113)) (9.1.2)
+-Requirement already satisfied: typing-extensions==4.15.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 115)) (4.15.0)
+-Requirement already satisfied: typing-inspection==0.4.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 123)) (0.4.2)
+-Requirement already satisfied: tzdata==2026.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 127)) (2026.1)
+-Requirement already satisfied: urllib3==2.6.3 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 132)) (2.6.3)
+-Requirement already satisfied: uvicorn==0.35.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 134)) (0.35.0)
+-Requirement already satisfied: wheel==0.45.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 136)) (0.45.1)
+-Requirement already satisfied: x-wr-timezone==2.0.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 140)) (2.0.1)
+-Requirement already satisfied: pip>=22.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pip-tools==7.4.1->-r ci-requirements.txt (line 61)) (26.0.1)
+-Requirement already satisfied: setuptools in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pip-tools==7.4.1->-r ci-requirements.txt (line 61)) (82.0.0)
+-WARNING: respx 0.22.0 does not provide the extra 'router'
+-Obtaining file:///home/alexey/LAN_Transcriber
+-  Installing build dependencies: started
+-  Installing build dependencies: finished with status 'done'
+-  Checking if build backend supports build_editable: started
+-  Checking if build backend supports build_editable: finished with status 'done'
+-  Getting requirements to build editable: started
+-  Getting requirements to build editable: finished with status 'done'
+-  Preparing editable metadata (pyproject.toml): started
+-  Preparing editable metadata (pyproject.toml): finished with status 'done'
+-Requirement already satisfied: httpx in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.28.1)
+-Requirement already satisfied: tenacity in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (9.1.2)
+-Requirement already satisfied: prometheus_client>=0.19.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.25.0)
+-Requirement already satisfied: anyio in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (4.13.0)
+-Requirement already satisfied: fastapi in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.116.1)
+-Requirement already satisfied: jinja2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (3.1.6)
+-Requirement already satisfied: python-multipart in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.0.22)
+-Requirement already satisfied: redis in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (7.2.0)
+-Requirement already satisfied: rq in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (2.6.1)
+-Requirement already satisfied: pyyaml in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (6.0.2)
+-Requirement already satisfied: pydantic-settings in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (2.10.1)
+-Requirement already satisfied: rapidfuzz in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (3.14.3)
+-Requirement already satisfied: icalendar>=6.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (6.3.1)
+-Requirement already satisfied: recurring-ical-events>=3.6 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (3.8.0)
+-Requirement already satisfied: pytest in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (8.2.0)
+-Requirement already satisfied: pytest-asyncio in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (1.1.0)
+-Requirement already satisfied: pytest-cov in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (5.0.0)
+-Requirement already satisfied: pytest-mock in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (3.14.1)
+-Requirement already satisfied: respx[router] in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.22.0)
+-Requirement already satisfied: fonttools>=4.0 in /home/alexey/.local/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (4.62.1)
+-Requirement already satisfied: brotli in /home/alexey/.local/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (1.2.0)
+-Requirement already satisfied: python-dateutil in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from icalendar>=6.0->lan-transcriber==0.1.0) (2.9.0.post0)
+-Requirement already satisfied: tzdata in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from icalendar>=6.0->lan-transcriber==0.1.0) (2026.1)
+-Requirement already satisfied: x-wr-timezone<3.0.0,>=1.0.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from recurring-ical-events>=3.6->lan-transcriber==0.1.0) (2.0.1)
+-Requirement already satisfied: six>=1.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from python-dateutil->icalendar>=6.0->lan-transcriber==0.1.0) (1.17.0)
+-Requirement already satisfied: click in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from x-wr-timezone<3.0.0,>=1.0.0->recurring-ical-events>=3.6->lan-transcriber==0.1.0) (8.3.2)
+-Requirement already satisfied: idna>=2.8 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from anyio->lan-transcriber==0.1.0) (3.11)
+-Requirement already satisfied: typing_extensions>=4.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from anyio->lan-transcriber==0.1.0) (4.15.0)
+-Requirement already satisfied: starlette<0.48.0,>=0.40.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from fastapi->lan-transcriber==0.1.0) (0.47.3)
+-Requirement already satisfied: pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from fastapi->lan-transcriber==0.1.0) (2.12.5)
+-Requirement already satisfied: annotated-types>=0.6.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi->lan-transcriber==0.1.0) (0.7.0)
+-Requirement already satisfied: pydantic-core==2.41.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi->lan-transcriber==0.1.0) (2.41.5)
+-Requirement already satisfied: typing-inspection>=0.4.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi->lan-transcriber==0.1.0) (0.4.2)
+-Requirement already satisfied: certifi in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from httpx->lan-transcriber==0.1.0) (2026.2.25)
+-Requirement already satisfied: httpcore==1.* in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from httpx->lan-transcriber==0.1.0) (1.0.9)
+-Requirement already satisfied: h11>=0.16 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from httpcore==1.*->httpx->lan-transcriber==0.1.0) (0.16.0)
+-Requirement already satisfied: MarkupSafe>=2.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from jinja2->lan-transcriber==0.1.0) (3.0.3)
+-Requirement already satisfied: python-dotenv>=0.21.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pydantic-settings->lan-transcriber==0.1.0) (1.2.2)
+-Requirement already satisfied: iniconfig in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pytest->lan-transcriber==0.1.0) (2.3.0)
+-Requirement already satisfied: packaging in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pytest->lan-transcriber==0.1.0) (26.0)
+-Requirement already satisfied: pluggy<2.0,>=1.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pytest->lan-transcriber==0.1.0) (1.6.0)
+-Requirement already satisfied: coverage>=5.2.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from coverage[toml]>=5.2.1->pytest-cov->lan-transcriber==0.1.0) (7.13.5)
+-WARNING: respx 0.22.0 does not provide the extra 'router'
+-Requirement already satisfied: croniter in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from rq->lan-transcriber==0.1.0) (6.0.0)
+-Requirement already satisfied: pytz>2021.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from croniter->rq->lan-transcriber==0.1.0) (2025.2)
+-Building wheels for collected packages: lan-transcriber
+-  Building editable for lan-transcriber (pyproject.toml): started
+-  Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
+-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15475 sha256=a54affdb873f6fa6e9854316fb258abd6d4859aa462877e167420b00193a949d
+-  Stored in directory: /tmp/pip-ephem-wheel-cache-k40ouhp_/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
+-Successfully built lan-transcriber
+-Installing collected packages: lan-transcriber
+-  Attempting uninstall: lan-transcriber
+-    Found existing installation: lan-transcriber 0.1.0
+-    Uninstalling lan-transcriber-0.1.0:
+-      Successfully uninstalled lan-transcriber-0.1.0
+-Successfully installed lan-transcriber-0.1.0
+-No broken requirements found.
+ All checks passed!
+ /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages/pytest_asyncio/plugin.py:211: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+ The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+@@ -124,18 +8,19 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
+ ........................................................................ [ 17%]
+ ........................................................................ [ 23%]
+ ........................................................................ [ 29%]
+-........................................................................ [ 35%]
+-........................................................................ [ 41%]
+-........................................................................ [ 47%]
+-........................................................................ [ 53%]
+-........................................................................ [ 59%]
+-........................................................................ [ 65%]
+-........................................................................ [ 71%]
+-.....................s.................................................. [ 77%]
+-........................................................................ [ 83%]
+-........................................................................ [ 89%]
+-........................................................................ [ 94%]
+-.............................................................            [100%]
++........................................................................ [ 34%]
++........................................................................ [ 40%]
++........................................................................ [ 46%]
++........................................................................ [ 52%]
++........................................................................ [ 58%]
++........................................................................ [ 63%]
++........................................................................ [ 69%]
++.....................s.................................................. [ 75%]
++........................................................................ [ 81%]
++........................................................................ [ 87%]
++........................................................................ [ 93%]
++........................................................................ [ 98%]
++..............                                                           [100%]
+ =============================== warnings summary ===============================
+ lan_transcriber/pipeline_steps/precheck.py:3
+   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
+@@ -174,13 +59,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
+ ---------- coverage: platform linux, python 3.11.9-final-0 -----------
+ Name    Stmts   Miss Branch BrPart  Cover   Missing
+ ---------------------------------------------------
+-TOTAL   14682      0   4920      0   100%
++TOTAL   14764      0   4936      0   100%
+ 
+-64 files skipped due to complete coverage.
++65 files skipped due to complete coverage.
+ Coverage HTML written to dir htmlcov
+ 
+ Required test coverage of 100% reached. Total coverage: 100.00%
+-1212 passed, 3 skipped, 11 warnings in 110.05s (0:01:50)
++1237 passed, 3 skipped, 11 warnings in 109.75s (0:01:49)
+ Name                                                    Stmts   Miss Branch BrPart  Cover
+ -----------------------------------------------------------------------------------------
+ lan_transcriber/__init__.py                                 8      0      0      0   100%
+@@ -241,15 +126,16 @@ lan_app/reaper.py                     67      0     18      0   100%
+ lan_app/routing.py                   257      0    102      0   100%
+ lan_app/snippet_repair.py            373      0    114      0   100%
+ lan_app/speaker_bank.py              107      0     34      0   100%
+-lan_app/system_status.py             240      0     96      0   100%
++lan_app/system_status.py             261      0    106      0   100%
+ lan_app/tools/__init__.py              1      0      0      0   100%
+ lan_app/tools/repair_snippets.py      36      0     12      0   100%
+ lan_app/tools/warm_models.py          47      0     10      0   100%
+ lan_app/ui.py                         59      0     10      0   100%
+ lan_app/ui_routes.py                2681      0   1020      0   100%
+ lan_app/uploads.py                    79      0     14      0   100%
+-lan_app/worker.py                     28      0      2      0   100%
++lan_app/worker.py                     31      0      2      0   100%
++lan_app/worker_status.py              58      0      6      0   100%
+ lan_app/worker_tasks.py             1734      0    498      0   100%
+ lan_app/workers.py                    10      0      0      0   100%
+ --------------------------------------------------------------------
+-TOTAL                              10105      0   3338      0   100%
++TOTAL                              10187      0   3354      0   100%
+diff --git a/artifacts/pr.patch b/artifacts/pr.patch
+index e69de29..1e080ca 100644
+--- a/artifacts/pr.patch
++++ b/artifacts/pr.patch
+@@ -0,0 +1,1049 @@
++diff --git a/artifacts/ci.log b/artifacts/ci.log
++index c630ff4..abed7f7 100644
++--- a/artifacts/ci.log
+++++ b/artifacts/ci.log
++@@ -1,119 +1,3 @@
++-Requirement already satisfied: pip in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (26.0.1)
++-Requirement already satisfied: annotated-types==0.7.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 7)) (0.7.0)
++-Requirement already satisfied: antlr4-python3-runtime==4.9.3 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 9)) (4.9.3)
++-Requirement already satisfied: anyio==4.13.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 11)) (4.13.0)
++-Requirement already satisfied: build==1.4.3 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 15)) (1.4.3)
++-Requirement already satisfied: certifi==2026.2.25 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 17)) (2026.2.25)
++-Requirement already satisfied: charset-normalizer==3.4.7 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 22)) (3.4.7)
++-Requirement already satisfied: click==8.3.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 24)) (8.3.2)
++-Requirement already satisfied: coverage==7.13.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from coverage[toml]==7.13.5->-r ci-requirements.txt (line 29)) (7.13.5)
++-Requirement already satisfied: fastapi==0.116.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 31)) (0.116.1)
++-Requirement already satisfied: h11==0.16.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 33)) (0.16.0)
++-Requirement already satisfied: httpcore==1.0.9 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 37)) (1.0.9)
++-Requirement already satisfied: httpx==0.28.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 39)) (0.28.1)
++-Requirement already satisfied: icalendar==6.3.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 43)) (6.3.1)
++-Requirement already satisfied: idna==3.11 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 48)) (3.11)
++-Requirement already satisfied: iniconfig==2.3.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 53)) (2.3.0)
++-Requirement already satisfied: omegaconf==2.3.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 55)) (2.3.0)
++-Requirement already satisfied: packaging==26.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 57)) (26.0)
++-Requirement already satisfied: pip-tools==7.4.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 61)) (7.4.1)
++-Requirement already satisfied: pluggy==1.6.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 63)) (1.6.0)
++-Requirement already satisfied: prometheus-client==0.25.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 65)) (0.25.0)
++-Requirement already satisfied: pydantic==2.12.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 67)) (2.12.5)
++-Requirement already satisfied: pydantic-core==2.41.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 71)) (2.41.5)
++-Requirement already satisfied: pydantic-settings==2.10.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 73)) (2.10.1)
++-Requirement already satisfied: pyproject-hooks==1.2.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 75)) (1.2.0)
++-Requirement already satisfied: pytest==8.2.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 79)) (8.2.0)
++-Requirement already satisfied: pytest-asyncio==1.1.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 85)) (1.1.0)
++-Requirement already satisfied: pytest-cov==5.0.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 87)) (5.0.0)
++-Requirement already satisfied: pytest-mock==3.14.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 89)) (3.14.1)
++-Requirement already satisfied: python-dateutil==2.9.0.post0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 91)) (2.9.0.post0)
++-Requirement already satisfied: python-dotenv==1.2.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 95)) (1.2.2)
++-Requirement already satisfied: pyyaml==6.0.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 97)) (6.0.2)
++-Requirement already satisfied: recurring-ical-events==3.8.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 101)) (3.8.0)
++-Requirement already satisfied: requests==2.33.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 103)) (2.33.1)
++-Requirement already satisfied: respx==0.22.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from respx[router]==0.22.0->-r ci-requirements.txt (line 105)) (0.22.0)
++-Requirement already satisfied: ruff==0.12.4 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 107)) (0.12.4)
++-Requirement already satisfied: six==1.17.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 109)) (1.17.0)
++-Requirement already satisfied: starlette==0.47.3 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 111)) (0.47.3)
++-Requirement already satisfied: tenacity==9.1.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 113)) (9.1.2)
++-Requirement already satisfied: typing-extensions==4.15.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 115)) (4.15.0)
++-Requirement already satisfied: typing-inspection==0.4.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 123)) (0.4.2)
++-Requirement already satisfied: tzdata==2026.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 127)) (2026.1)
++-Requirement already satisfied: urllib3==2.6.3 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 132)) (2.6.3)
++-Requirement already satisfied: uvicorn==0.35.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 134)) (0.35.0)
++-Requirement already satisfied: wheel==0.45.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 136)) (0.45.1)
++-Requirement already satisfied: x-wr-timezone==2.0.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 140)) (2.0.1)
++-Requirement already satisfied: pip>=22.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pip-tools==7.4.1->-r ci-requirements.txt (line 61)) (26.0.1)
++-Requirement already satisfied: setuptools in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pip-tools==7.4.1->-r ci-requirements.txt (line 61)) (82.0.0)
++-WARNING: respx 0.22.0 does not provide the extra 'router'
++-Obtaining file:///home/alexey/LAN_Transcriber
++-  Installing build dependencies: started
++-  Installing build dependencies: finished with status 'done'
++-  Checking if build backend supports build_editable: started
++-  Checking if build backend supports build_editable: finished with status 'done'
++-  Getting requirements to build editable: started
++-  Getting requirements to build editable: finished with status 'done'
++-  Preparing editable metadata (pyproject.toml): started
++-  Preparing editable metadata (pyproject.toml): finished with status 'done'
++-Requirement already satisfied: httpx in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.28.1)
++-Requirement already satisfied: tenacity in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (9.1.2)
++-Requirement already satisfied: prometheus_client>=0.19.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.25.0)
++-Requirement already satisfied: anyio in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (4.13.0)
++-Requirement already satisfied: fastapi in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.116.1)
++-Requirement already satisfied: jinja2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (3.1.6)
++-Requirement already satisfied: python-multipart in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.0.22)
++-Requirement already satisfied: redis in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (7.2.0)
++-Requirement already satisfied: rq in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (2.6.1)
++-Requirement already satisfied: pyyaml in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (6.0.2)
++-Requirement already satisfied: pydantic-settings in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (2.10.1)
++-Requirement already satisfied: rapidfuzz in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (3.14.3)
++-Requirement already satisfied: icalendar>=6.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (6.3.1)
++-Requirement already satisfied: recurring-ical-events>=3.6 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (3.8.0)
++-Requirement already satisfied: pytest in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (8.2.0)
++-Requirement already satisfied: pytest-asyncio in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (1.1.0)
++-Requirement already satisfied: pytest-cov in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (5.0.0)
++-Requirement already satisfied: pytest-mock in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (3.14.1)
++-Requirement already satisfied: respx[router] in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.22.0)
++-Requirement already satisfied: fonttools>=4.0 in /home/alexey/.local/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (4.62.1)
++-Requirement already satisfied: brotli in /home/alexey/.local/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (1.2.0)
++-Requirement already satisfied: python-dateutil in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from icalendar>=6.0->lan-transcriber==0.1.0) (2.9.0.post0)
++-Requirement already satisfied: tzdata in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from icalendar>=6.0->lan-transcriber==0.1.0) (2026.1)
++-Requirement already satisfied: x-wr-timezone<3.0.0,>=1.0.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from recurring-ical-events>=3.6->lan-transcriber==0.1.0) (2.0.1)
++-Requirement already satisfied: six>=1.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from python-dateutil->icalendar>=6.0->lan-transcriber==0.1.0) (1.17.0)
++-Requirement already satisfied: click in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from x-wr-timezone<3.0.0,>=1.0.0->recurring-ical-events>=3.6->lan-transcriber==0.1.0) (8.3.2)
++-Requirement already satisfied: idna>=2.8 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from anyio->lan-transcriber==0.1.0) (3.11)
++-Requirement already satisfied: typing_extensions>=4.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from anyio->lan-transcriber==0.1.0) (4.15.0)
++-Requirement already satisfied: starlette<0.48.0,>=0.40.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from fastapi->lan-transcriber==0.1.0) (0.47.3)
++-Requirement already satisfied: pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from fastapi->lan-transcriber==0.1.0) (2.12.5)
++-Requirement already satisfied: annotated-types>=0.6.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi->lan-transcriber==0.1.0) (0.7.0)
++-Requirement already satisfied: pydantic-core==2.41.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi->lan-transcriber==0.1.0) (2.41.5)
++-Requirement already satisfied: typing-inspection>=0.4.2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi->lan-transcriber==0.1.0) (0.4.2)
++-Requirement already satisfied: certifi in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from httpx->lan-transcriber==0.1.0) (2026.2.25)
++-Requirement already satisfied: httpcore==1.* in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from httpx->lan-transcriber==0.1.0) (1.0.9)
++-Requirement already satisfied: h11>=0.16 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from httpcore==1.*->httpx->lan-transcriber==0.1.0) (0.16.0)
++-Requirement already satisfied: MarkupSafe>=2.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from jinja2->lan-transcriber==0.1.0) (3.0.3)
++-Requirement already satisfied: python-dotenv>=0.21.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pydantic-settings->lan-transcriber==0.1.0) (1.2.2)
++-Requirement already satisfied: iniconfig in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pytest->lan-transcriber==0.1.0) (2.3.0)
++-Requirement already satisfied: packaging in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pytest->lan-transcriber==0.1.0) (26.0)
++-Requirement already satisfied: pluggy<2.0,>=1.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from pytest->lan-transcriber==0.1.0) (1.6.0)
++-Requirement already satisfied: coverage>=5.2.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from coverage[toml]>=5.2.1->pytest-cov->lan-transcriber==0.1.0) (7.13.5)
++-WARNING: respx 0.22.0 does not provide the extra 'router'
++-Requirement already satisfied: croniter in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from rq->lan-transcriber==0.1.0) (6.0.0)
++-Requirement already satisfied: pytz>2021.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from croniter->rq->lan-transcriber==0.1.0) (2025.2)
++-Building wheels for collected packages: lan-transcriber
++-  Building editable for lan-transcriber (pyproject.toml): started
++-  Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
++-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15475 sha256=a54affdb873f6fa6e9854316fb258abd6d4859aa462877e167420b00193a949d
++-  Stored in directory: /tmp/pip-ephem-wheel-cache-k40ouhp_/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
++-Successfully built lan-transcriber
++-Installing collected packages: lan-transcriber
++-  Attempting uninstall: lan-transcriber
++-    Found existing installation: lan-transcriber 0.1.0
++-    Uninstalling lan-transcriber-0.1.0:
++-      Successfully uninstalled lan-transcriber-0.1.0
++-Successfully installed lan-transcriber-0.1.0
++-No broken requirements found.
++ All checks passed!
++ /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages/pytest_asyncio/plugin.py:211: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
++ The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
++@@ -124,18 +8,19 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
++ ........................................................................ [ 17%]
++ ........................................................................ [ 23%]
++ ........................................................................ [ 29%]
++-........................................................................ [ 35%]
++-........................................................................ [ 41%]
++-........................................................................ [ 47%]
++-........................................................................ [ 53%]
++-........................................................................ [ 59%]
++-........................................................................ [ 65%]
++-........................................................................ [ 71%]
++-.....................s.................................................. [ 77%]
++-........................................................................ [ 83%]
++-........................................................................ [ 89%]
++-........................................................................ [ 94%]
++-.............................................................            [100%]
+++........................................................................ [ 34%]
+++........................................................................ [ 40%]
+++........................................................................ [ 46%]
+++........................................................................ [ 52%]
+++........................................................................ [ 58%]
+++........................................................................ [ 64%]
+++........................................................................ [ 69%]
+++.....................s.................................................. [ 75%]
+++........................................................................ [ 81%]
+++........................................................................ [ 87%]
+++........................................................................ [ 93%]
+++........................................................................ [ 98%]
+++.............                                                            [100%]
++ =============================== warnings summary ===============================
++ lan_transcriber/pipeline_steps/precheck.py:3
++   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
++@@ -174,13 +59,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
++ ---------- coverage: platform linux, python 3.11.9-final-0 -----------
++ Name    Stmts   Miss Branch BrPart  Cover   Missing
++ ---------------------------------------------------
++-TOTAL   14682      0   4920      0   100%
+++TOTAL   14762      0   4936      0   100%
++ 
++-64 files skipped due to complete coverage.
+++65 files skipped due to complete coverage.
++ Coverage HTML written to dir htmlcov
++ 
++ Required test coverage of 100% reached. Total coverage: 100.00%
++-1212 passed, 3 skipped, 11 warnings in 110.05s (0:01:50)
+++1236 passed, 3 skipped, 11 warnings in 107.49s (0:01:47)
++ Name                                                    Stmts   Miss Branch BrPart  Cover
++ -----------------------------------------------------------------------------------------
++ lan_transcriber/__init__.py                                 8      0      0      0   100%
++@@ -241,15 +126,16 @@ lan_app/reaper.py                     67      0     18      0   100%
++ lan_app/routing.py                   257      0    102      0   100%
++ lan_app/snippet_repair.py            373      0    114      0   100%
++ lan_app/speaker_bank.py              107      0     34      0   100%
++-lan_app/system_status.py             240      0     96      0   100%
+++lan_app/system_status.py             260      0    106      0   100%
++ lan_app/tools/__init__.py              1      0      0      0   100%
++ lan_app/tools/repair_snippets.py      36      0     12      0   100%
++ lan_app/tools/warm_models.py          47      0     10      0   100%
++ lan_app/ui.py                         59      0     10      0   100%
++ lan_app/ui_routes.py                2681      0   1020      0   100%
++ lan_app/uploads.py                    79      0     14      0   100%
++-lan_app/worker.py                     28      0      2      0   100%
+++lan_app/worker.py                     31      0      2      0   100%
+++lan_app/worker_status.py              57      0      6      0   100%
++ lan_app/worker_tasks.py             1734      0    498      0   100%
++ lan_app/workers.py                    10      0      0      0   100%
++ --------------------------------------------------------------------
++-TOTAL                              10105      0   3338      0   100%
+++TOTAL                              10185      0   3354      0   100%
++diff --git a/lan_app/system_status.py b/lan_app/system_status.py
++index c50e03b..e319545 100644
++--- a/lan_app/system_status.py
+++++ b/lan_app/system_status.py
++@@ -17,6 +17,7 @@ from lan_transcriber.gpu_policy import (
++ from .config import AppSettings
++ from .constants import JOB_STATUS_QUEUED, JOB_STATUS_STARTED
++ from .db import get_recording, list_jobs
+++from .worker_status import is_worker_status_fresh, read_worker_status
++ 
++ _SPARK_PROBE_TIMEOUT = httpx.Timeout(2.0, connect=0.5)
++ 
++@@ -421,6 +422,39 @@ def _node_status_item(
++     }
++ 
++ 
+++def _worker_gpu_runtime_item(
+++    *,
+++    settings: AppSettings,
+++    gpu_busy: bool,
+++    explicit_gpu_requested: bool,
+++) -> dict[str, Any] | None:
+++    data_root = getattr(settings, "data_root", None)
+++    if data_root is None:
+++        return None
+++    status = read_worker_status(data_root)
+++    if status is None:
+++        return None
+++    if not is_worker_status_fresh(status):
+++        return None
+++    if bool(status.get("gpu_available")):
+++        device_count = max(int(status.get("device_count") or 0), 1)
+++        torch_cuda = str(status.get("torch_cuda_version") or "").strip() or "unknown"
+++        return {
+++            "label": "GPU runtime",
+++            "value": "GPU busy" if gpu_busy else "GPU ready",
+++            "detail": f"worker sees {device_count} GPU(s) · CUDA {torch_cuda}",
+++            "tone": "busy" if gpu_busy else "healthy",
+++        }
+++    visible = str(status.get("visible_devices") or "").strip() or "default"
+++    torch_cuda = str(status.get("torch_cuda_version") or "").strip() or "none"
+++    return {
+++        "label": "GPU runtime",
+++        "value": "GPU unavailable" if explicit_gpu_requested else "CPU only",
+++        "detail": f"worker reports no CUDA · visible={visible} · torch CUDA {torch_cuda}",
+++        "tone": "offline" if explicit_gpu_requested else "degraded",
+++    }
+++
+++
++ def _gpu_runtime_item(
++     *,
++     settings: AppSettings,
++@@ -432,6 +466,13 @@ def _gpu_runtime_item(
++         getattr(settings, "asr_device", None)
++     ) or _safe_is_gpu_device(getattr(settings, "diarization_device", None))
++     gpu_busy = bool(queue.get("started_total")) and not active_llm
+++    worker_item = _worker_gpu_runtime_item(
+++        settings=settings,
+++        gpu_busy=gpu_busy,
+++        explicit_gpu_requested=explicit_gpu_requested,
+++    )
+++    if worker_item is not None:
+++        return worker_item
++     torch_cuda = cuda_facts.torch_cuda_version or "none"
++     nvidia_smi = _probe_nvidia_smi()
++ 
++diff --git a/lan_app/worker.py b/lan_app/worker.py
++index d994a04..0595d06 100644
++--- a/lan_app/worker.py
+++++ b/lan_app/worker.py
++@@ -9,6 +9,7 @@ from rq import Worker
++ 
++ from .config import AppSettings
++ from .db import init_db
+++from .worker_status import start_heartbeat_thread, write_worker_status
++ 
++ _logger = logging.getLogger(__name__)
++ 
++@@ -32,6 +33,8 @@ def _install_signal_handlers(worker: Worker) -> None:
++ def main() -> None:
++     settings = AppSettings()
++     init_db(settings)
+++    write_worker_status(settings.data_root)
+++    start_heartbeat_thread(settings.data_root)
++     connection = Redis.from_url(settings.redis_url)
++     worker = Worker([settings.rq_queue_name], connection=connection)
++     _install_signal_handlers(worker)
++diff --git a/lan_app/worker_status.py b/lan_app/worker_status.py
++new file mode 100644
++index 0000000..f235d3c
++--- /dev/null
+++++ b/lan_app/worker_status.py
++@@ -0,0 +1,113 @@
+++from __future__ import annotations
+++
+++import json
+++import threading
+++from datetime import datetime, timedelta, timezone
+++from pathlib import Path
+++from typing import Any
+++
+++from lan_transcriber.artifacts import atomic_write_json
+++from lan_transcriber.gpu_policy import collect_cuda_runtime_facts
+++
+++WORKER_STATUS_FILENAME = "worker_status.json"
+++WORKER_STATUS_STALE_AFTER = timedelta(minutes=10)
+++WORKER_HEARTBEAT_INTERVAL_SECONDS = 60.0
+++
+++
+++def worker_status_path(data_root: Path) -> Path:
+++    return Path(data_root) / WORKER_STATUS_FILENAME
+++
+++
+++def write_worker_status(
+++    data_root: Path,
+++    *,
+++    now: datetime | None = None,
+++) -> dict[str, Any]:
+++    facts = collect_cuda_runtime_facts()
+++    heartbeat = (now or datetime.now(tz=timezone.utc)).isoformat()
+++    payload: dict[str, Any] = {
+++        "gpu_available": bool(facts.is_available),
+++        "device_count": int(facts.device_count),
+++        "visible_devices": facts.visible_devices,
+++        "torch_cuda_version": facts.torch_cuda_version,
+++        "last_heartbeat": heartbeat,
+++    }
+++    path = worker_status_path(data_root)
+++    try:
+++        atomic_write_json(path, payload)
+++    except OSError:
+++        return payload
+++    return payload
+++
+++
+++def read_worker_status(data_root: Path) -> dict[str, Any] | None:
+++    path = worker_status_path(data_root)
+++    try:
+++        text = path.read_text(encoding="utf-8")
+++    except (FileNotFoundError, OSError):
+++        return None
+++    try:
+++        data = json.loads(text)
+++    except ValueError:
+++        return None
+++    return data if isinstance(data, dict) else None
+++
+++
+++def is_worker_status_fresh(
+++    status: dict[str, Any],
+++    *,
+++    now: datetime | None = None,
+++) -> bool:
+++    raw = str(status.get("last_heartbeat") or "").strip()
+++    if not raw:
+++        return False
+++    try:
+++        heartbeat = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+++    except ValueError:
+++        return False
+++    if heartbeat.tzinfo is None:
+++        heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+++    current = now or datetime.now(tz=timezone.utc)
+++    return (current - heartbeat) <= WORKER_STATUS_STALE_AFTER
+++
+++
+++def run_heartbeat_loop(
+++    data_root: Path,
+++    stop_event: threading.Event,
+++    *,
+++    interval: float = WORKER_HEARTBEAT_INTERVAL_SECONDS,
+++) -> None:
+++    while True:
+++        write_worker_status(data_root)
+++        if stop_event.wait(interval):
+++            return
+++
+++
+++def start_heartbeat_thread(
+++    data_root: Path,
+++    *,
+++    interval: float = WORKER_HEARTBEAT_INTERVAL_SECONDS,
+++) -> tuple[threading.Event, threading.Thread]:
+++    stop_event = threading.Event()
+++    thread = threading.Thread(
+++        target=run_heartbeat_loop,
+++        args=(data_root, stop_event),
+++        kwargs={"interval": interval},
+++        daemon=True,
+++        name="worker-heartbeat",
+++    )
+++    thread.start()
+++    return stop_event, thread
+++
+++
+++__all__ = [
+++    "WORKER_HEARTBEAT_INTERVAL_SECONDS",
+++    "WORKER_STATUS_FILENAME",
+++    "WORKER_STATUS_STALE_AFTER",
+++    "is_worker_status_fresh",
+++    "read_worker_status",
+++    "run_heartbeat_loop",
+++    "start_heartbeat_thread",
+++    "worker_status_path",
+++    "write_worker_status",
+++]
++diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
++index 96eacbf..d8fa19e 100644
++--- a/tasks/QUEUE.md
+++++ b/tasks/QUEUE.md
++@@ -736,7 +736,7 @@ Queue (in order)
++ - Depends on: PR-SPEAKER-MERGE-DUAL-THRESHOLD-01
++ 
++ 147) PR-GPU-STATUS-FIX-01: Fix system bar GPU status showing CPU only when worker uses GPU
++-- Status: TODO
+++- Status: DONE
++ - Tasks file: tasks/PR-GPU-STATUS-FIX-01.md
++ - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
++ 
++diff --git a/tests/test_cov_lan_app_health_worker.py b/tests/test_cov_lan_app_health_worker.py
++index 34a11fa..d5365d5 100644
++--- a/tests/test_cov_lan_app_health_worker.py
+++++ b/tests/test_cov_lan_app_health_worker.py
++@@ -431,9 +431,21 @@ def test_worker_signal_handlers_and_main(monkeypatch):
++         redis_url="redis://unit",
++         rq_queue_name="audio",
++         rq_worker_burst=True,
+++        data_root=Path("/tmp/worker-main-data"),
++     )
++     monkeypatch.setattr(worker, "AppSettings", lambda: settings)
++     monkeypatch.setattr(worker, "init_db", lambda cfg: calls.setdefault("init_db", cfg))
+++    monkeypatch.setattr(
+++        worker,
+++        "write_worker_status",
+++        lambda data_root: calls.setdefault("write_status", data_root),
+++    )
+++    monkeypatch.setattr(
+++        worker,
+++        "start_heartbeat_thread",
+++        lambda data_root: calls.setdefault("heartbeat_root", data_root)
+++        or (None, None),
+++    )
++     connection = object()
++ 
++     def _redis_from_url(url):
++@@ -460,18 +472,34 @@ def test_worker_signal_handlers_and_main(monkeypatch):
++     assert calls["connection"] is connection
++     assert calls["work"] == (False, True)
++     assert calls["handler_worker"] is not None
+++    assert calls["write_status"] == settings.data_root
+++    assert calls["heartbeat_root"] == settings.data_root
++ 
++ 
++ def test_worker_module_main_guard(monkeypatch):
+++    from lan_app import worker_status as worker_status_module
+++
++     calls: dict[str, object] = {}
++     settings = SimpleNamespace(
++         redis_url="redis://guard",
++         rq_queue_name="guard-queue",
++         rq_worker_burst=False,
+++        data_root=Path("/tmp/worker-guard-data"),
++     )
++     monkeypatch.setattr(config_module, "AppSettings", lambda: settings)
++     monkeypatch.setattr(db_module, "init_db", lambda cfg: calls.setdefault("init_db", cfg))
++     monkeypatch.setattr(signal, "signal", lambda *_args, **_kwargs: None)
+++    monkeypatch.setattr(
+++        worker_status_module,
+++        "write_worker_status",
+++        lambda data_root: calls.setdefault("write_status", data_root),
+++    )
+++    monkeypatch.setattr(
+++        worker_status_module,
+++        "start_heartbeat_thread",
+++        lambda data_root: calls.setdefault("heartbeat_root", data_root)
+++        or (None, None),
+++    )
++ 
++     import redis
++     import rq
++@@ -495,6 +523,8 @@ def test_worker_module_main_guard(monkeypatch):
++     assert calls["init_db"] is settings
++     assert calls["queues"] == ["guard-queue"]
++     assert calls["work"] == (False, False)
+++    assert calls["write_status"] == settings.data_root
+++    assert calls["heartbeat_root"] == settings.data_root
++ 
++ 
++ @pytest.mark.asyncio
++diff --git a/tests/test_system_status.py b/tests/test_system_status.py
++index 683ad0b..6c979a4 100644
++--- a/tests/test_system_status.py
+++++ b/tests/test_system_status.py
++@@ -736,3 +736,344 @@ def test_collect_control_center_runtime_status_idle_and_unknown_spark(tmp_path,
++ 
++     assert payload["items"][0]["value"] == "Unknown"
++     assert payload["items"][0]["tone"] == "degraded"
+++
+++
+++def _write_worker_status_file(tmp_path, **overrides):
+++    from datetime import datetime, timezone
+++
+++    payload = {
+++        "gpu_available": True,
+++        "device_count": 1,
+++        "visible_devices": "0",
+++        "torch_cuda_version": "12.6",
+++        "last_heartbeat": datetime.now(tz=timezone.utc).isoformat(),
+++    }
+++    payload.update(overrides)
+++    (tmp_path / "worker_status.json").write_text(json.dumps(payload), encoding="utf-8")
+++    return payload
+++
+++
+++def test_gpu_runtime_uses_fresh_worker_status_when_gpu_available(tmp_path, monkeypatch):
+++    data_root = tmp_path / "data"
+++    data_root.mkdir()
+++    _write_worker_status_file(data_root, device_count=2)
+++
+++    settings = _settings(
+++        tmp_path,
+++        data_root=data_root,
+++        asr_device="cuda",
+++        diarization_device="cuda",
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "_probe_spark_runtime",
+++        lambda _settings: {
+++            "state": "healthy",
+++            "value": "Online",
+++            "detail": "dgx.local responded to /v1/models",
+++            "host": "dgx.local",
+++            "advertised_models": ["gpt-oss:120b"],
+++            "model_verified": True,
+++        },
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "_active_job_snapshot",
+++        lambda _settings: {
+++            "started_total": 0,
+++            "queued_total": 0,
+++            "active_job": None,
+++            "queued_job": None,
+++            "active_recording": None,
+++            "active_detail": None,
+++            "active_stage": "",
+++            "error": None,
+++        },
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "collect_cuda_runtime_facts",
+++        lambda: CudaRuntimeFacts(
+++            is_available=False,
+++            device_count=0,
+++            visible_devices=None,
+++            torch_cuda_version=None,
+++        ),
+++    )
+++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
+++
+++    payload = system_status.collect_control_center_runtime_status(settings)
+++    gpu_item = payload["items"][1]
+++    assert gpu_item["value"] == "GPU ready"
+++    assert gpu_item["tone"] == "healthy"
+++    assert gpu_item["detail"] == "worker sees 2 GPU(s) · CUDA 12.6"
+++
+++
+++def test_gpu_runtime_reports_worker_busy_from_queue(tmp_path, monkeypatch):
+++    data_root = tmp_path / "data"
+++    data_root.mkdir()
+++    _write_worker_status_file(data_root, device_count=0, torch_cuda_version=None)
+++
+++    settings = _settings(tmp_path, data_root=data_root)
+++    monkeypatch.setattr(
+++        system_status,
+++        "_probe_spark_runtime",
+++        lambda _settings: {
+++            "state": "healthy",
+++            "value": "Online",
+++            "detail": "dgx.local responded to /v1/models",
+++            "host": "dgx.local",
+++            "advertised_models": ["gpt-oss:120b"],
+++            "model_verified": True,
+++        },
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "_active_job_snapshot",
+++        lambda _settings: {
+++            "started_total": 1,
+++            "queued_total": 0,
+++            "active_job": {"recording_id": "rec-1"},
+++            "queued_job": None,
+++            "active_recording": {"id": "rec-1", "source_filename": "meeting.mp3"},
+++            "active_detail": "meeting.mp3 · ASR",
+++            "active_stage": "asr",
+++            "error": None,
+++        },
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "collect_cuda_runtime_facts",
+++        lambda: CudaRuntimeFacts(
+++            is_available=False,
+++            device_count=0,
+++            visible_devices=None,
+++            torch_cuda_version=None,
+++        ),
+++    )
+++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
+++
+++    payload = system_status.collect_control_center_runtime_status(settings)
+++    gpu_item = payload["items"][1]
+++    assert gpu_item["value"] == "GPU busy"
+++    assert gpu_item["tone"] == "busy"
+++    assert gpu_item["detail"] == "worker sees 1 GPU(s) · CUDA unknown"
+++
+++
+++def test_gpu_runtime_worker_reports_cpu_only(tmp_path, monkeypatch):
+++    data_root = tmp_path / "data"
+++    data_root.mkdir()
+++    _write_worker_status_file(
+++        data_root,
+++        gpu_available=False,
+++        device_count=0,
+++        visible_devices=None,
+++        torch_cuda_version=None,
+++    )
+++
+++    settings = _settings(tmp_path, data_root=data_root)
+++    monkeypatch.setattr(
+++        system_status,
+++        "_probe_spark_runtime",
+++        lambda _settings: {
+++            "state": "healthy",
+++            "value": "Online",
+++            "detail": "dgx.local responded to /v1/models",
+++            "host": "dgx.local",
+++            "advertised_models": ["gpt-oss:120b"],
+++            "model_verified": True,
+++        },
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "_active_job_snapshot",
+++        lambda _settings: {
+++            "started_total": 0,
+++            "queued_total": 0,
+++            "active_job": None,
+++            "queued_job": None,
+++            "active_recording": None,
+++            "active_detail": None,
+++            "active_stage": "",
+++            "error": None,
+++        },
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "collect_cuda_runtime_facts",
+++        lambda: CudaRuntimeFacts(
+++            is_available=False,
+++            device_count=0,
+++            visible_devices=None,
+++            torch_cuda_version=None,
+++        ),
+++    )
+++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
+++
+++    payload = system_status.collect_control_center_runtime_status(settings)
+++    gpu_item = payload["items"][1]
+++    assert gpu_item["value"] == "CPU only"
+++    assert gpu_item["tone"] == "degraded"
+++    assert gpu_item["detail"] == "worker reports no CUDA · visible=default · torch CUDA none"
+++
+++
+++def test_gpu_runtime_worker_reports_gpu_unavailable_when_requested(tmp_path, monkeypatch):
+++    data_root = tmp_path / "data"
+++    data_root.mkdir()
+++    _write_worker_status_file(
+++        data_root,
+++        gpu_available=False,
+++        device_count=0,
+++        visible_devices="1",
+++        torch_cuda_version="12.1",
+++    )
+++
+++    settings = _settings(
+++        tmp_path,
+++        data_root=data_root,
+++        asr_device="cuda",
+++        diarization_device="cuda",
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "_probe_spark_runtime",
+++        lambda _settings: {
+++            "state": "healthy",
+++            "value": "Online",
+++            "detail": "dgx.local responded to /v1/models",
+++            "host": "dgx.local",
+++            "advertised_models": ["gpt-oss:120b"],
+++            "model_verified": True,
+++        },
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "_active_job_snapshot",
+++        lambda _settings: {
+++            "started_total": 0,
+++            "queued_total": 0,
+++            "active_job": None,
+++            "queued_job": None,
+++            "active_recording": None,
+++            "active_detail": None,
+++            "active_stage": "",
+++            "error": None,
+++        },
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "collect_cuda_runtime_facts",
+++        lambda: CudaRuntimeFacts(
+++            is_available=False,
+++            device_count=0,
+++            visible_devices=None,
+++            torch_cuda_version=None,
+++        ),
+++    )
+++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
+++
+++    payload = system_status.collect_control_center_runtime_status(settings)
+++    gpu_item = payload["items"][1]
+++    assert gpu_item["value"] == "GPU unavailable"
+++    assert gpu_item["tone"] == "offline"
+++    assert gpu_item["detail"] == "worker reports no CUDA · visible=1 · torch CUDA 12.1"
+++
+++
+++def test_gpu_runtime_falls_back_when_worker_status_stale(tmp_path, monkeypatch):
+++    from datetime import datetime, timedelta, timezone
+++
+++    data_root = tmp_path / "data"
+++    data_root.mkdir()
+++    stale_ts = (datetime.now(tz=timezone.utc) - timedelta(hours=1)).isoformat()
+++    _write_worker_status_file(data_root, last_heartbeat=stale_ts)
+++
+++    settings = _settings(tmp_path, data_root=data_root)
+++    monkeypatch.setattr(
+++        system_status,
+++        "_probe_spark_runtime",
+++        lambda _settings: {
+++            "state": "healthy",
+++            "value": "Online",
+++            "detail": "dgx.local responded to /v1/models",
+++            "host": "dgx.local",
+++            "advertised_models": ["gpt-oss:120b"],
+++            "model_verified": True,
+++        },
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "_active_job_snapshot",
+++        lambda _settings: {
+++            "started_total": 0,
+++            "queued_total": 0,
+++            "active_job": None,
+++            "queued_job": None,
+++            "active_recording": None,
+++            "active_detail": None,
+++            "active_stage": "",
+++            "error": None,
+++        },
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "collect_cuda_runtime_facts",
+++        lambda: CudaRuntimeFacts(
+++            is_available=False,
+++            device_count=0,
+++            visible_devices=None,
+++            torch_cuda_version=None,
+++        ),
+++    )
+++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
+++
+++    payload = system_status.collect_control_center_runtime_status(settings)
+++    assert payload["items"][1]["value"] == "CPU only"
+++    assert payload["items"][1]["detail"].startswith("visible=default")
+++
+++
+++def test_gpu_runtime_falls_back_when_worker_status_missing(tmp_path, monkeypatch):
+++    data_root = tmp_path / "data"
+++    data_root.mkdir()
+++
+++    settings = _settings(tmp_path, data_root=data_root)
+++    monkeypatch.setattr(
+++        system_status,
+++        "_probe_spark_runtime",
+++        lambda _settings: {
+++            "state": "healthy",
+++            "value": "Online",
+++            "detail": "dgx.local responded to /v1/models",
+++            "host": "dgx.local",
+++            "advertised_models": ["gpt-oss:120b"],
+++            "model_verified": True,
+++        },
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "_active_job_snapshot",
+++        lambda _settings: {
+++            "started_total": 0,
+++            "queued_total": 0,
+++            "active_job": None,
+++            "queued_job": None,
+++            "active_recording": None,
+++            "active_detail": None,
+++            "active_stage": "",
+++            "error": None,
+++        },
+++    )
+++    monkeypatch.setattr(
+++        system_status,
+++        "collect_cuda_runtime_facts",
+++        lambda: CudaRuntimeFacts(
+++            is_available=True,
+++            device_count=1,
+++            visible_devices=None,
+++            torch_cuda_version="12.6",
+++        ),
+++    )
+++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
+++
+++    payload = system_status.collect_control_center_runtime_status(settings)
+++    assert payload["items"][1]["value"] == "GPU ready"
+++    assert payload["items"][1]["detail"].startswith("torch sees 1 GPU(s)")
++diff --git a/tests/test_worker_status.py b/tests/test_worker_status.py
++new file mode 100644
++index 0000000..2643d58
++--- /dev/null
+++++ b/tests/test_worker_status.py
++@@ -0,0 +1,212 @@
+++from __future__ import annotations
+++
+++import json
+++import threading
+++from datetime import datetime, timedelta, timezone
+++from pathlib import Path
+++
+++import pytest
+++
+++from lan_app import worker_status
+++from lan_transcriber.gpu_policy import CudaRuntimeFacts
+++
+++
+++def _gpu_facts(**overrides) -> CudaRuntimeFacts:
+++    base = {
+++        "is_available": True,
+++        "device_count": 1,
+++        "visible_devices": "0",
+++        "torch_cuda_version": "12.6",
+++    }
+++    base.update(overrides)
+++    return CudaRuntimeFacts(**base)
+++
+++
+++def test_worker_status_path(tmp_path: Path) -> None:
+++    assert worker_status.worker_status_path(tmp_path) == tmp_path / "worker_status.json"
+++
+++
+++def test_write_worker_status_writes_payload(tmp_path: Path, monkeypatch) -> None:
+++    monkeypatch.setattr(worker_status, "collect_cuda_runtime_facts", _gpu_facts)
+++    fixed_now = datetime(2026, 4, 12, 9, 30, tzinfo=timezone.utc)
+++    payload = worker_status.write_worker_status(tmp_path, now=fixed_now)
+++
+++    assert payload["gpu_available"] is True
+++    assert payload["device_count"] == 1
+++    assert payload["visible_devices"] == "0"
+++    assert payload["torch_cuda_version"] == "12.6"
+++    assert payload["last_heartbeat"] == fixed_now.isoformat()
+++
+++    on_disk = json.loads((tmp_path / "worker_status.json").read_text(encoding="utf-8"))
+++    assert on_disk == payload
+++
+++
+++def test_write_worker_status_tolerates_write_failures(tmp_path: Path, monkeypatch) -> None:
+++    monkeypatch.setattr(worker_status, "collect_cuda_runtime_facts", _gpu_facts)
+++
+++    def _boom(_path, _data):
+++        raise OSError("disk full")
+++
+++    monkeypatch.setattr(worker_status, "atomic_write_json", _boom)
+++    payload = worker_status.write_worker_status(tmp_path)
+++    assert payload["gpu_available"] is True
+++    assert not (tmp_path / "worker_status.json").exists()
+++
+++
+++def test_write_worker_status_defaults_to_current_utc(tmp_path: Path, monkeypatch) -> None:
+++    monkeypatch.setattr(worker_status, "collect_cuda_runtime_facts", _gpu_facts)
+++    before = datetime.now(tz=timezone.utc)
+++    payload = worker_status.write_worker_status(tmp_path)
+++    after = datetime.now(tz=timezone.utc)
+++    heartbeat = datetime.fromisoformat(payload["last_heartbeat"])
+++    assert before <= heartbeat <= after
+++
+++
+++def test_read_worker_status_missing_file(tmp_path: Path) -> None:
+++    assert worker_status.read_worker_status(tmp_path) is None
+++
+++
+++def test_read_worker_status_invalid_json(tmp_path: Path) -> None:
+++    (tmp_path / "worker_status.json").write_text("{broken", encoding="utf-8")
+++    assert worker_status.read_worker_status(tmp_path) is None
+++
+++
+++def test_read_worker_status_non_dict(tmp_path: Path) -> None:
+++    (tmp_path / "worker_status.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+++    assert worker_status.read_worker_status(tmp_path) is None
+++
+++
+++def test_read_worker_status_returns_dict(tmp_path: Path) -> None:
+++    payload = {"gpu_available": True, "last_heartbeat": "2026-04-12T09:00:00+00:00"}
+++    (tmp_path / "worker_status.json").write_text(json.dumps(payload), encoding="utf-8")
+++    assert worker_status.read_worker_status(tmp_path) == payload
+++
+++
+++def test_read_worker_status_os_error(tmp_path: Path, monkeypatch) -> None:
+++    def _boom(self, **kwargs):
+++        raise OSError("perm denied")
+++
+++    monkeypatch.setattr(Path, "read_text", _boom)
+++    assert worker_status.read_worker_status(tmp_path) is None
+++
+++
+++def test_is_worker_status_fresh_variants() -> None:
+++    now = datetime(2026, 4, 12, 10, 0, tzinfo=timezone.utc)
+++
+++    assert worker_status.is_worker_status_fresh({}, now=now) is False
+++    assert worker_status.is_worker_status_fresh({"last_heartbeat": ""}, now=now) is False
+++    assert worker_status.is_worker_status_fresh({"last_heartbeat": "not-a-date"}, now=now) is False
+++
+++    fresh_ts = (now - timedelta(minutes=1)).isoformat()
+++    assert worker_status.is_worker_status_fresh({"last_heartbeat": fresh_ts}, now=now) is True
+++
+++    stale_ts = (now - timedelta(hours=1)).isoformat()
+++    assert worker_status.is_worker_status_fresh({"last_heartbeat": stale_ts}, now=now) is False
+++
+++    naive_fresh = (now.replace(tzinfo=None) - timedelta(minutes=2)).isoformat()
+++    assert worker_status.is_worker_status_fresh({"last_heartbeat": naive_fresh}, now=now) is True
+++
+++    z_suffixed = (now - timedelta(minutes=3)).isoformat().replace("+00:00", "Z")
+++    assert worker_status.is_worker_status_fresh({"last_heartbeat": z_suffixed}, now=now) is True
+++
+++
+++def test_is_worker_status_fresh_defaults_now(monkeypatch) -> None:
+++    heartbeat = datetime.now(tz=timezone.utc).isoformat()
+++    assert worker_status.is_worker_status_fresh({"last_heartbeat": heartbeat}) is True
+++
+++
+++def test_run_heartbeat_loop_writes_and_exits(tmp_path: Path, monkeypatch) -> None:
+++    writes: list[Path] = []
+++
+++    def _fake_write(path):
+++        writes.append(Path(path))
+++
+++    monkeypatch.setattr(worker_status, "write_worker_status", _fake_write)
+++
+++    event = threading.Event()
+++    event.set()
+++
+++    worker_status.run_heartbeat_loop(tmp_path, event, interval=0.01)
+++    assert writes == [tmp_path]
+++
+++
+++def test_run_heartbeat_loop_runs_multiple_iterations(tmp_path: Path, monkeypatch) -> None:
+++    writes: list[Path] = []
+++    event = threading.Event()
+++
+++    def _fake_write(path):
+++        writes.append(Path(path))
+++        if len(writes) >= 2:
+++            event.set()
+++
+++    monkeypatch.setattr(worker_status, "write_worker_status", _fake_write)
+++    worker_status.run_heartbeat_loop(tmp_path, event, interval=0.001)
+++    assert len(writes) == 2
+++
+++
+++def test_start_heartbeat_thread_creates_daemon(monkeypatch, tmp_path: Path) -> None:
+++    created: dict[str, object] = {}
+++
+++    class _FakeThread:
+++        def __init__(self, *, target, args, kwargs, daemon, name):
+++            created["target"] = target
+++            created["args"] = args
+++            created["kwargs"] = kwargs
+++            created["daemon"] = daemon
+++            created["name"] = name
+++
+++        def start(self) -> None:
+++            created["started"] = True
+++
+++    monkeypatch.setattr(worker_status.threading, "Thread", _FakeThread)
+++    event, thread = worker_status.start_heartbeat_thread(tmp_path, interval=5.0)
+++
+++    assert isinstance(event, threading.Event)
+++    assert created["started"] is True
+++    assert created["daemon"] is True
+++    assert created["name"] == "worker-heartbeat"
+++    assert created["target"] is worker_status.run_heartbeat_loop
+++    assert created["args"] == (tmp_path, event)
+++    assert created["kwargs"] == {"interval": 5.0}
+++    assert isinstance(thread, _FakeThread)
+++
+++
+++def test_start_heartbeat_thread_default_interval(monkeypatch, tmp_path: Path) -> None:
+++    captured: dict[str, object] = {}
+++
+++    class _FakeThread:
+++        def __init__(self, *, target, args, kwargs, daemon, name):
+++            captured["kwargs"] = kwargs
+++            del target, args, daemon, name
+++
+++        def start(self) -> None:
+++            captured["started"] = True
+++
+++    monkeypatch.setattr(worker_status.threading, "Thread", _FakeThread)
+++    worker_status.start_heartbeat_thread(tmp_path)
+++    assert captured["kwargs"] == {"interval": worker_status.WORKER_HEARTBEAT_INTERVAL_SECONDS}
+++    assert captured["started"] is True
+++
+++
+++def test_worker_status_module_exports() -> None:
+++    assert "write_worker_status" in worker_status.__all__
+++    assert "read_worker_status" in worker_status.__all__
+++    assert "is_worker_status_fresh" in worker_status.__all__
+++    assert "start_heartbeat_thread" in worker_status.__all__
+++
+++
+++@pytest.mark.parametrize(
+++    "device_count",
+++    [0, 2],
+++)
+++def test_write_worker_status_captures_device_count(
+++    tmp_path: Path, monkeypatch, device_count: int
+++) -> None:
+++    monkeypatch.setattr(
+++        worker_status,
+++        "collect_cuda_runtime_facts",
+++        lambda: _gpu_facts(device_count=device_count, is_available=device_count > 0),
+++    )
+++    payload = worker_status.write_worker_status(tmp_path)
+++    assert payload["device_count"] == device_count
+++    assert payload["gpu_available"] is (device_count > 0)
+diff --git a/lan_app/system_status.py b/lan_app/system_status.py
+index c50e03b..b4e5bd3 100644
+--- a/lan_app/system_status.py
++++ b/lan_app/system_status.py
+@@ -17,6 +17,7 @@ from lan_transcriber.gpu_policy import (
+ from .config import AppSettings
+ from .constants import JOB_STATUS_QUEUED, JOB_STATUS_STARTED
+ from .db import get_recording, list_jobs
++from .worker_status import is_worker_status_fresh, read_worker_status
+ 
+ _SPARK_PROBE_TIMEOUT = httpx.Timeout(2.0, connect=0.5)
+ 
+@@ -421,6 +422,40 @@ def _node_status_item(
+     }
+ 
+ 
++def _worker_gpu_runtime_item(
++    *,
++    settings: AppSettings,
++    gpu_busy: bool,
++    explicit_gpu_requested: bool,
++) -> dict[str, Any] | None:
++    data_root = getattr(settings, "data_root", None)
++    if data_root is None:
++        return None
++    status = read_worker_status(data_root)
++    if status is None:
++        return None
++    if not is_worker_status_fresh(status):
++        return None
++    if bool(status.get("gpu_available")):
++        parsed_count = _parse_int(status.get("device_count")) or 0
++        device_count = max(parsed_count, 1)
++        torch_cuda = str(status.get("torch_cuda_version") or "").strip() or "unknown"
++        return {
++            "label": "GPU runtime",
++            "value": "GPU busy" if gpu_busy else "GPU ready",
++            "detail": f"worker sees {device_count} GPU(s) · CUDA {torch_cuda}",
++            "tone": "busy" if gpu_busy else "healthy",
++        }
++    visible = str(status.get("visible_devices") or "").strip() or "default"
++    torch_cuda = str(status.get("torch_cuda_version") or "").strip() or "none"
++    return {
++        "label": "GPU runtime",
++        "value": "GPU unavailable" if explicit_gpu_requested else "CPU only",
++        "detail": f"worker reports no CUDA · visible={visible} · torch CUDA {torch_cuda}",
++        "tone": "offline" if explicit_gpu_requested else "degraded",
++    }
++
++
+ def _gpu_runtime_item(
+     *,
+     settings: AppSettings,
+@@ -432,6 +467,13 @@ def _gpu_runtime_item(
+         getattr(settings, "asr_device", None)
+     ) or _safe_is_gpu_device(getattr(settings, "diarization_device", None))
+     gpu_busy = bool(queue.get("started_total")) and not active_llm
++    worker_item = _worker_gpu_runtime_item(
++        settings=settings,
++        gpu_busy=gpu_busy,
++        explicit_gpu_requested=explicit_gpu_requested,
++    )
++    if worker_item is not None:
++        return worker_item
+     torch_cuda = cuda_facts.torch_cuda_version or "none"
+     nvidia_smi = _probe_nvidia_smi()
+ 
+diff --git a/lan_app/worker.py b/lan_app/worker.py
+index d994a04..0595d06 100644
+--- a/lan_app/worker.py
++++ b/lan_app/worker.py
+@@ -9,6 +9,7 @@ from rq import Worker
+ 
+ from .config import AppSettings
+ from .db import init_db
++from .worker_status import start_heartbeat_thread, write_worker_status
+ 
+ _logger = logging.getLogger(__name__)
+ 
+@@ -32,6 +33,8 @@ def _install_signal_handlers(worker: Worker) -> None:
+ def main() -> None:
+     settings = AppSettings()
+     init_db(settings)
++    write_worker_status(settings.data_root)
++    start_heartbeat_thread(settings.data_root)
+     connection = Redis.from_url(settings.redis_url)
+     worker = Worker([settings.rq_queue_name], connection=connection)
+     _install_signal_handlers(worker)
+diff --git a/lan_app/worker_status.py b/lan_app/worker_status.py
+new file mode 100644
+index 0000000..07d26b2
+--- /dev/null
++++ b/lan_app/worker_status.py
+@@ -0,0 +1,114 @@
++from __future__ import annotations
++
++import json
++import threading
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++from typing import Any
++
++from lan_transcriber.artifacts import atomic_write_json
++from lan_transcriber.gpu_policy import collect_cuda_runtime_facts
++
++WORKER_STATUS_FILENAME = "worker_status.json"
++WORKER_STATUS_STALE_AFTER = timedelta(minutes=10)
++WORKER_HEARTBEAT_INTERVAL_SECONDS = 60.0
++
++
++def worker_status_path(data_root: Path) -> Path:
++    return Path(data_root) / WORKER_STATUS_FILENAME
++
++
++def write_worker_status(
++    data_root: Path,
++    *,
++    now: datetime | None = None,
++) -> dict[str, Any]:
++    facts = collect_cuda_runtime_facts()
++    heartbeat = (now or datetime.now(tz=timezone.utc)).isoformat()
++    payload: dict[str, Any] = {
++        "gpu_available": bool(facts.is_available),
++        "device_count": int(facts.device_count),
++        "visible_devices": facts.visible_devices,
++        "torch_cuda_version": facts.torch_cuda_version,
++        "last_heartbeat": heartbeat,
++    }
++    path = worker_status_path(data_root)
++    try:
++        atomic_write_json(path, payload)
++    except OSError:
++        return payload
++    return payload
++
++
++def read_worker_status(data_root: Path) -> dict[str, Any] | None:
++    path = worker_status_path(data_root)
++    try:
++        text = path.read_text(encoding="utf-8")
++    except (FileNotFoundError, OSError):
++        return None
++    try:
++        data = json.loads(text)
++    except ValueError:
++        return None
++    return data if isinstance(data, dict) else None
++
++
++def is_worker_status_fresh(
++    status: dict[str, Any],
++    *,
++    now: datetime | None = None,
++) -> bool:
++    raw = str(status.get("last_heartbeat") or "").strip()
++    if not raw:
++        return False
++    try:
++        heartbeat = datetime.fromisoformat(raw.replace("Z", "+00:00"))
++    except ValueError:
++        return False
++    if heartbeat.tzinfo is None:
++        heartbeat = heartbeat.replace(tzinfo=timezone.utc)
++    current = now or datetime.now(tz=timezone.utc)
++    delta = current - heartbeat
++    return timedelta(0) <= delta <= WORKER_STATUS_STALE_AFTER
++
++
++def run_heartbeat_loop(
++    data_root: Path,
++    stop_event: threading.Event,
++    *,
++    interval: float = WORKER_HEARTBEAT_INTERVAL_SECONDS,
++) -> None:
++    while True:
++        write_worker_status(data_root)
++        if stop_event.wait(interval):
++            return
++
++
++def start_heartbeat_thread(
++    data_root: Path,
++    *,
++    interval: float = WORKER_HEARTBEAT_INTERVAL_SECONDS,
++) -> tuple[threading.Event, threading.Thread]:
++    stop_event = threading.Event()
++    thread = threading.Thread(
++        target=run_heartbeat_loop,
++        args=(data_root, stop_event),
++        kwargs={"interval": interval},
++        daemon=True,
++        name="worker-heartbeat",
++    )
++    thread.start()
++    return stop_event, thread
++
++
++__all__ = [
++    "WORKER_HEARTBEAT_INTERVAL_SECONDS",
++    "WORKER_STATUS_FILENAME",
++    "WORKER_STATUS_STALE_AFTER",
++    "is_worker_status_fresh",
++    "read_worker_status",
++    "run_heartbeat_loop",
++    "start_heartbeat_thread",
++    "worker_status_path",
++    "write_worker_status",
++]
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 96eacbf..d8fa19e 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -736,7 +736,7 @@ Queue (in order)
+ - Depends on: PR-SPEAKER-MERGE-DUAL-THRESHOLD-01
+ 
+ 147) PR-GPU-STATUS-FIX-01: Fix system bar GPU status showing CPU only when worker uses GPU
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-GPU-STATUS-FIX-01.md
+ - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
+ 
+diff --git a/tests/test_cov_lan_app_health_worker.py b/tests/test_cov_lan_app_health_worker.py
+index 34a11fa..d5365d5 100644
+--- a/tests/test_cov_lan_app_health_worker.py
++++ b/tests/test_cov_lan_app_health_worker.py
+@@ -431,9 +431,21 @@ def test_worker_signal_handlers_and_main(monkeypatch):
+         redis_url="redis://unit",
+         rq_queue_name="audio",
+         rq_worker_burst=True,
++        data_root=Path("/tmp/worker-main-data"),
+     )
+     monkeypatch.setattr(worker, "AppSettings", lambda: settings)
+     monkeypatch.setattr(worker, "init_db", lambda cfg: calls.setdefault("init_db", cfg))
++    monkeypatch.setattr(
++        worker,
++        "write_worker_status",
++        lambda data_root: calls.setdefault("write_status", data_root),
++    )
++    monkeypatch.setattr(
++        worker,
++        "start_heartbeat_thread",
++        lambda data_root: calls.setdefault("heartbeat_root", data_root)
++        or (None, None),
++    )
+     connection = object()
+ 
+     def _redis_from_url(url):
+@@ -460,18 +472,34 @@ def test_worker_signal_handlers_and_main(monkeypatch):
+     assert calls["connection"] is connection
+     assert calls["work"] == (False, True)
+     assert calls["handler_worker"] is not None
++    assert calls["write_status"] == settings.data_root
++    assert calls["heartbeat_root"] == settings.data_root
+ 
+ 
+ def test_worker_module_main_guard(monkeypatch):
++    from lan_app import worker_status as worker_status_module
++
+     calls: dict[str, object] = {}
+     settings = SimpleNamespace(
+         redis_url="redis://guard",
+         rq_queue_name="guard-queue",
+         rq_worker_burst=False,
++        data_root=Path("/tmp/worker-guard-data"),
+     )
+     monkeypatch.setattr(config_module, "AppSettings", lambda: settings)
+     monkeypatch.setattr(db_module, "init_db", lambda cfg: calls.setdefault("init_db", cfg))
+     monkeypatch.setattr(signal, "signal", lambda *_args, **_kwargs: None)
++    monkeypatch.setattr(
++        worker_status_module,
++        "write_worker_status",
++        lambda data_root: calls.setdefault("write_status", data_root),
++    )
++    monkeypatch.setattr(
++        worker_status_module,
++        "start_heartbeat_thread",
++        lambda data_root: calls.setdefault("heartbeat_root", data_root)
++        or (None, None),
++    )
+ 
+     import redis
+     import rq
+@@ -495,6 +523,8 @@ def test_worker_module_main_guard(monkeypatch):
+     assert calls["init_db"] is settings
+     assert calls["queues"] == ["guard-queue"]
+     assert calls["work"] == (False, False)
++    assert calls["write_status"] == settings.data_root
++    assert calls["heartbeat_root"] == settings.data_root
+ 
+ 
+ @pytest.mark.asyncio
+diff --git a/tests/test_system_status.py b/tests/test_system_status.py
+index 683ad0b..efaaea4 100644
+--- a/tests/test_system_status.py
++++ b/tests/test_system_status.py
+@@ -736,3 +736,398 @@ def test_collect_control_center_runtime_status_idle_and_unknown_spark(tmp_path,
+ 
+     assert payload["items"][0]["value"] == "Unknown"
+     assert payload["items"][0]["tone"] == "degraded"
++
++
++def _write_worker_status_file(tmp_path, **overrides):
++    from datetime import datetime, timezone
++
++    payload = {
++        "gpu_available": True,
++        "device_count": 1,
++        "visible_devices": "0",
++        "torch_cuda_version": "12.6",
++        "last_heartbeat": datetime.now(tz=timezone.utc).isoformat(),
++    }
++    payload.update(overrides)
++    (tmp_path / "worker_status.json").write_text(json.dumps(payload), encoding="utf-8")
++    return payload
++
++
++def test_gpu_runtime_uses_fresh_worker_status_when_gpu_available(tmp_path, monkeypatch):
++    data_root = tmp_path / "data"
++    data_root.mkdir()
++    _write_worker_status_file(data_root, device_count=2)
++
++    settings = _settings(
++        tmp_path,
++        data_root=data_root,
++        asr_device="cuda",
++        diarization_device="cuda",
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "healthy",
++            "value": "Online",
++            "detail": "dgx.local responded to /v1/models",
++            "host": "dgx.local",
++            "advertised_models": ["gpt-oss:120b"],
++            "model_verified": True,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 0,
++            "queued_total": 0,
++            "active_job": None,
++            "queued_job": None,
++            "active_recording": None,
++            "active_detail": None,
++            "active_stage": "",
++            "error": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=False,
++            device_count=0,
++            visible_devices=None,
++            torch_cuda_version=None,
++        ),
++    )
++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
++
++    payload = system_status.collect_control_center_runtime_status(settings)
++    gpu_item = payload["items"][1]
++    assert gpu_item["value"] == "GPU ready"
++    assert gpu_item["tone"] == "healthy"
++    assert gpu_item["detail"] == "worker sees 2 GPU(s) · CUDA 12.6"
++
++
++def test_gpu_runtime_handles_non_numeric_device_count(tmp_path, monkeypatch):
++    data_root = tmp_path / "data"
++    data_root.mkdir()
++    _write_worker_status_file(
++        data_root,
++        device_count="bogus",
++        torch_cuda_version="12.6",
++    )
++
++    settings = _settings(tmp_path, data_root=data_root)
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "healthy",
++            "value": "Online",
++            "detail": "dgx.local responded to /v1/models",
++            "host": "dgx.local",
++            "advertised_models": ["gpt-oss:120b"],
++            "model_verified": True,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 0,
++            "queued_total": 0,
++            "active_job": None,
++            "queued_job": None,
++            "active_recording": None,
++            "active_detail": None,
++            "active_stage": "",
++            "error": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=False,
++            device_count=0,
++            visible_devices=None,
++            torch_cuda_version=None,
++        ),
++    )
++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
++
++    payload = system_status.collect_control_center_runtime_status(settings)
++    gpu_item = payload["items"][1]
++    assert gpu_item["value"] == "GPU ready"
++    assert gpu_item["detail"] == "worker sees 1 GPU(s) · CUDA 12.6"
++
++
++def test_gpu_runtime_reports_worker_busy_from_queue(tmp_path, monkeypatch):
++    data_root = tmp_path / "data"
++    data_root.mkdir()
++    _write_worker_status_file(data_root, device_count=0, torch_cuda_version=None)
++
++    settings = _settings(tmp_path, data_root=data_root)
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "healthy",
++            "value": "Online",
++            "detail": "dgx.local responded to /v1/models",
++            "host": "dgx.local",
++            "advertised_models": ["gpt-oss:120b"],
++            "model_verified": True,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 1,
++            "queued_total": 0,
++            "active_job": {"recording_id": "rec-1"},
++            "queued_job": None,
++            "active_recording": {"id": "rec-1", "source_filename": "meeting.mp3"},
++            "active_detail": "meeting.mp3 · ASR",
++            "active_stage": "asr",
++            "error": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=False,
++            device_count=0,
++            visible_devices=None,
++            torch_cuda_version=None,
++        ),
++    )
++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
++
++    payload = system_status.collect_control_center_runtime_status(settings)
++    gpu_item = payload["items"][1]
++    assert gpu_item["value"] == "GPU busy"
++    assert gpu_item["tone"] == "busy"
++    assert gpu_item["detail"] == "worker sees 1 GPU(s) · CUDA unknown"
++
++
++def test_gpu_runtime_worker_reports_cpu_only(tmp_path, monkeypatch):
++    data_root = tmp_path / "data"
++    data_root.mkdir()
++    _write_worker_status_file(
++        data_root,
++        gpu_available=False,
++        device_count=0,
++        visible_devices=None,
++        torch_cuda_version=None,
++    )
++
++    settings = _settings(tmp_path, data_root=data_root)
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "healthy",
++            "value": "Online",
++            "detail": "dgx.local responded to /v1/models",
++            "host": "dgx.local",
++            "advertised_models": ["gpt-oss:120b"],
++            "model_verified": True,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 0,
++            "queued_total": 0,
++            "active_job": None,
++            "queued_job": None,
++            "active_recording": None,
++            "active_detail": None,
++            "active_stage": "",
++            "error": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=False,
++            device_count=0,
++            visible_devices=None,
++            torch_cuda_version=None,
++        ),
++    )
++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
++
++    payload = system_status.collect_control_center_runtime_status(settings)
++    gpu_item = payload["items"][1]
++    assert gpu_item["value"] == "CPU only"
++    assert gpu_item["tone"] == "degraded"
++    assert gpu_item["detail"] == "worker reports no CUDA · visible=default · torch CUDA none"
++
++
++def test_gpu_runtime_worker_reports_gpu_unavailable_when_requested(tmp_path, monkeypatch):
++    data_root = tmp_path / "data"
++    data_root.mkdir()
++    _write_worker_status_file(
++        data_root,
++        gpu_available=False,
++        device_count=0,
++        visible_devices="1",
++        torch_cuda_version="12.1",
++    )
++
++    settings = _settings(
++        tmp_path,
++        data_root=data_root,
++        asr_device="cuda",
++        diarization_device="cuda",
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "healthy",
++            "value": "Online",
++            "detail": "dgx.local responded to /v1/models",
++            "host": "dgx.local",
++            "advertised_models": ["gpt-oss:120b"],
++            "model_verified": True,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 0,
++            "queued_total": 0,
++            "active_job": None,
++            "queued_job": None,
++            "active_recording": None,
++            "active_detail": None,
++            "active_stage": "",
++            "error": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=False,
++            device_count=0,
++            visible_devices=None,
++            torch_cuda_version=None,
++        ),
++    )
++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
++
++    payload = system_status.collect_control_center_runtime_status(settings)
++    gpu_item = payload["items"][1]
++    assert gpu_item["value"] == "GPU unavailable"
++    assert gpu_item["tone"] == "offline"
++    assert gpu_item["detail"] == "worker reports no CUDA · visible=1 · torch CUDA 12.1"
++
++
++def test_gpu_runtime_falls_back_when_worker_status_stale(tmp_path, monkeypatch):
++    from datetime import datetime, timedelta, timezone
++
++    data_root = tmp_path / "data"
++    data_root.mkdir()
++    stale_ts = (datetime.now(tz=timezone.utc) - timedelta(hours=1)).isoformat()
++    _write_worker_status_file(data_root, last_heartbeat=stale_ts)
++
++    settings = _settings(tmp_path, data_root=data_root)
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "healthy",
++            "value": "Online",
++            "detail": "dgx.local responded to /v1/models",
++            "host": "dgx.local",
++            "advertised_models": ["gpt-oss:120b"],
++            "model_verified": True,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 0,
++            "queued_total": 0,
++            "active_job": None,
++            "queued_job": None,
++            "active_recording": None,
++            "active_detail": None,
++            "active_stage": "",
++            "error": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=False,
++            device_count=0,
++            visible_devices=None,
++            torch_cuda_version=None,
++        ),
++    )
++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
++
++    payload = system_status.collect_control_center_runtime_status(settings)
++    assert payload["items"][1]["value"] == "CPU only"
++    assert payload["items"][1]["detail"].startswith("visible=default")
++
++
++def test_gpu_runtime_falls_back_when_worker_status_missing(tmp_path, monkeypatch):
++    data_root = tmp_path / "data"
++    data_root.mkdir()
++
++    settings = _settings(tmp_path, data_root=data_root)
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "healthy",
++            "value": "Online",
++            "detail": "dgx.local responded to /v1/models",
++            "host": "dgx.local",
++            "advertised_models": ["gpt-oss:120b"],
++            "model_verified": True,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 0,
++            "queued_total": 0,
++            "active_job": None,
++            "queued_job": None,
++            "active_recording": None,
++            "active_detail": None,
++            "active_stage": "",
++            "error": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=True,
++            device_count=1,
++            visible_devices=None,
++            torch_cuda_version="12.6",
++        ),
++    )
++    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
++
++    payload = system_status.collect_control_center_runtime_status(settings)
++    assert payload["items"][1]["value"] == "GPU ready"
++    assert payload["items"][1]["detail"].startswith("torch sees 1 GPU(s)")
+diff --git a/tests/test_worker_status.py b/tests/test_worker_status.py
+new file mode 100644
+index 0000000..7a33ee0
+--- /dev/null
++++ b/tests/test_worker_status.py
+@@ -0,0 +1,215 @@
++from __future__ import annotations
++
++import json
++import threading
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++
++import pytest
++
++from lan_app import worker_status
++from lan_transcriber.gpu_policy import CudaRuntimeFacts
++
++
++def _gpu_facts(**overrides) -> CudaRuntimeFacts:
++    base = {
++        "is_available": True,
++        "device_count": 1,
++        "visible_devices": "0",
++        "torch_cuda_version": "12.6",
++    }
++    base.update(overrides)
++    return CudaRuntimeFacts(**base)
++
++
++def test_worker_status_path(tmp_path: Path) -> None:
++    assert worker_status.worker_status_path(tmp_path) == tmp_path / "worker_status.json"
++
++
++def test_write_worker_status_writes_payload(tmp_path: Path, monkeypatch) -> None:
++    monkeypatch.setattr(worker_status, "collect_cuda_runtime_facts", _gpu_facts)
++    fixed_now = datetime(2026, 4, 12, 9, 30, tzinfo=timezone.utc)
++    payload = worker_status.write_worker_status(tmp_path, now=fixed_now)
++
++    assert payload["gpu_available"] is True
++    assert payload["device_count"] == 1
++    assert payload["visible_devices"] == "0"
++    assert payload["torch_cuda_version"] == "12.6"
++    assert payload["last_heartbeat"] == fixed_now.isoformat()
++
++    on_disk = json.loads((tmp_path / "worker_status.json").read_text(encoding="utf-8"))
++    assert on_disk == payload
++
++
++def test_write_worker_status_tolerates_write_failures(tmp_path: Path, monkeypatch) -> None:
++    monkeypatch.setattr(worker_status, "collect_cuda_runtime_facts", _gpu_facts)
++
++    def _boom(_path, _data):
++        raise OSError("disk full")
++
++    monkeypatch.setattr(worker_status, "atomic_write_json", _boom)
++    payload = worker_status.write_worker_status(tmp_path)
++    assert payload["gpu_available"] is True
++    assert not (tmp_path / "worker_status.json").exists()
++
++
++def test_write_worker_status_defaults_to_current_utc(tmp_path: Path, monkeypatch) -> None:
++    monkeypatch.setattr(worker_status, "collect_cuda_runtime_facts", _gpu_facts)
++    before = datetime.now(tz=timezone.utc)
++    payload = worker_status.write_worker_status(tmp_path)
++    after = datetime.now(tz=timezone.utc)
++    heartbeat = datetime.fromisoformat(payload["last_heartbeat"])
++    assert before <= heartbeat <= after
++
++
++def test_read_worker_status_missing_file(tmp_path: Path) -> None:
++    assert worker_status.read_worker_status(tmp_path) is None
++
++
++def test_read_worker_status_invalid_json(tmp_path: Path) -> None:
++    (tmp_path / "worker_status.json").write_text("{broken", encoding="utf-8")
++    assert worker_status.read_worker_status(tmp_path) is None
++
++
++def test_read_worker_status_non_dict(tmp_path: Path) -> None:
++    (tmp_path / "worker_status.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
++    assert worker_status.read_worker_status(tmp_path) is None
++
++
++def test_read_worker_status_returns_dict(tmp_path: Path) -> None:
++    payload = {"gpu_available": True, "last_heartbeat": "2026-04-12T09:00:00+00:00"}
++    (tmp_path / "worker_status.json").write_text(json.dumps(payload), encoding="utf-8")
++    assert worker_status.read_worker_status(tmp_path) == payload
++
++
++def test_read_worker_status_os_error(tmp_path: Path, monkeypatch) -> None:
++    def _boom(self, **kwargs):
++        raise OSError("perm denied")
++
++    monkeypatch.setattr(Path, "read_text", _boom)
++    assert worker_status.read_worker_status(tmp_path) is None
++
++
++def test_is_worker_status_fresh_variants() -> None:
++    now = datetime(2026, 4, 12, 10, 0, tzinfo=timezone.utc)
++
++    assert worker_status.is_worker_status_fresh({}, now=now) is False
++    assert worker_status.is_worker_status_fresh({"last_heartbeat": ""}, now=now) is False
++    assert worker_status.is_worker_status_fresh({"last_heartbeat": "not-a-date"}, now=now) is False
++
++    fresh_ts = (now - timedelta(minutes=1)).isoformat()
++    assert worker_status.is_worker_status_fresh({"last_heartbeat": fresh_ts}, now=now) is True
++
++    stale_ts = (now - timedelta(hours=1)).isoformat()
++    assert worker_status.is_worker_status_fresh({"last_heartbeat": stale_ts}, now=now) is False
++
++    naive_fresh = (now.replace(tzinfo=None) - timedelta(minutes=2)).isoformat()
++    assert worker_status.is_worker_status_fresh({"last_heartbeat": naive_fresh}, now=now) is True
++
++    z_suffixed = (now - timedelta(minutes=3)).isoformat().replace("+00:00", "Z")
++    assert worker_status.is_worker_status_fresh({"last_heartbeat": z_suffixed}, now=now) is True
++
++    future_ts = (now + timedelta(minutes=5)).isoformat()
++    assert worker_status.is_worker_status_fresh({"last_heartbeat": future_ts}, now=now) is False
++
++
++def test_is_worker_status_fresh_defaults_now(monkeypatch) -> None:
++    heartbeat = datetime.now(tz=timezone.utc).isoformat()
++    assert worker_status.is_worker_status_fresh({"last_heartbeat": heartbeat}) is True
++
++
++def test_run_heartbeat_loop_writes_and_exits(tmp_path: Path, monkeypatch) -> None:
++    writes: list[Path] = []
++
++    def _fake_write(path):
++        writes.append(Path(path))
++
++    monkeypatch.setattr(worker_status, "write_worker_status", _fake_write)
++
++    event = threading.Event()
++    event.set()
++
++    worker_status.run_heartbeat_loop(tmp_path, event, interval=0.01)
++    assert writes == [tmp_path]
++
++
++def test_run_heartbeat_loop_runs_multiple_iterations(tmp_path: Path, monkeypatch) -> None:
++    writes: list[Path] = []
++    event = threading.Event()
++
++    def _fake_write(path):
++        writes.append(Path(path))
++        if len(writes) >= 2:
++            event.set()
++
++    monkeypatch.setattr(worker_status, "write_worker_status", _fake_write)
++    worker_status.run_heartbeat_loop(tmp_path, event, interval=0.001)
++    assert len(writes) == 2
++
++
++def test_start_heartbeat_thread_creates_daemon(monkeypatch, tmp_path: Path) -> None:
++    created: dict[str, object] = {}
++
++    class _FakeThread:
++        def __init__(self, *, target, args, kwargs, daemon, name):
++            created["target"] = target
++            created["args"] = args
++            created["kwargs"] = kwargs
++            created["daemon"] = daemon
++            created["name"] = name
++
++        def start(self) -> None:
++            created["started"] = True
++
++    monkeypatch.setattr(worker_status.threading, "Thread", _FakeThread)
++    event, thread = worker_status.start_heartbeat_thread(tmp_path, interval=5.0)
++
++    assert isinstance(event, threading.Event)
++    assert created["started"] is True
++    assert created["daemon"] is True
++    assert created["name"] == "worker-heartbeat"
++    assert created["target"] is worker_status.run_heartbeat_loop
++    assert created["args"] == (tmp_path, event)
++    assert created["kwargs"] == {"interval": 5.0}
++    assert isinstance(thread, _FakeThread)
++
++
++def test_start_heartbeat_thread_default_interval(monkeypatch, tmp_path: Path) -> None:
++    captured: dict[str, object] = {}
++
++    class _FakeThread:
++        def __init__(self, *, target, args, kwargs, daemon, name):
++            captured["kwargs"] = kwargs
++            del target, args, daemon, name
++
++        def start(self) -> None:
++            captured["started"] = True
++
++    monkeypatch.setattr(worker_status.threading, "Thread", _FakeThread)
++    worker_status.start_heartbeat_thread(tmp_path)
++    assert captured["kwargs"] == {"interval": worker_status.WORKER_HEARTBEAT_INTERVAL_SECONDS}
++    assert captured["started"] is True
++
++
++def test_worker_status_module_exports() -> None:
++    assert "write_worker_status" in worker_status.__all__
++    assert "read_worker_status" in worker_status.__all__
++    assert "is_worker_status_fresh" in worker_status.__all__
++    assert "start_heartbeat_thread" in worker_status.__all__
++
++
++@pytest.mark.parametrize(
++    "device_count",
++    [0, 2],
++)
++def test_write_worker_status_captures_device_count(
++    tmp_path: Path, monkeypatch, device_count: int
++) -> None:
++    monkeypatch.setattr(
++        worker_status,
++        "collect_cuda_runtime_facts",
++        lambda: _gpu_facts(device_count=device_count, is_available=device_count > 0),
++    )
++    payload = worker_status.write_worker_status(tmp_path)
++    assert payload["device_count"] == device_count
++    assert payload["gpu_available"] is (device_count > 0)
