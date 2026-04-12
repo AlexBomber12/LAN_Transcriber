@@ -300,7 +300,7 @@ def test_whisperx_asr_retry_without_word_timestamps_on_typeerror(tmp_path: Path,
         if "word_timestamps" in kwargs:
             raise TypeError("unexpected keyword argument 'word_timestamps'")
         assert audio_path.endswith("a.wav")
-        assert kwargs == {"vad_filter": True, "language": "auto"}
+        assert kwargs == {"vad_filter": True, "task": "transcribe", "language": "auto"}
         return ([{"start": 0.0, "end": 1.0, "text": "hello"}], {"language": "en"})
 
     fake_whisperx.transcribe = _transcribe
@@ -1020,6 +1020,7 @@ def test_build_whisperx_transcriber_legacy_path_logs_partial_glossary_degrade_af
             raise TypeError("FasterWhisperPipeline.transcribe() got an unexpected keyword argument 'hotwords'")
         assert kwargs == {
             "vad_filter": True,
+            "task": "transcribe",
             "language": "auto",
             "word_timestamps": True,
             "initial_prompt": "Glossary: Sander; Sandia",
@@ -1053,6 +1054,7 @@ def test_build_whisperx_transcriber_legacy_path_logs_partial_glossary_degrade_af
     assert calls == [
         {
             "vad_filter": True,
+            "task": "transcribe",
             "language": "auto",
             "word_timestamps": True,
             "initial_prompt": "Glossary: Sander; Sandia",
@@ -1060,6 +1062,7 @@ def test_build_whisperx_transcriber_legacy_path_logs_partial_glossary_degrade_af
         },
         {
             "vad_filter": True,
+            "task": "transcribe",
             "language": "auto",
             "word_timestamps": True,
             "initial_prompt": "Glossary: Sander; Sandia",
