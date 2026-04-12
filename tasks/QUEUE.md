@@ -746,7 +746,7 @@ Queue (in order)
 - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
 
 149) PR-REMOVE-QUEUE-PAGE-01: Remove Queue page from navigation
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-REMOVE-QUEUE-PAGE-01.md
 - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
 
