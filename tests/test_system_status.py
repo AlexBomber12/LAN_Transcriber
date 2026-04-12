@@ -809,6 +809,60 @@ def test_gpu_runtime_uses_fresh_worker_status_when_gpu_available(tmp_path, monke
     assert gpu_item["detail"] == "worker sees 2 GPU(s) · CUDA 12.6"
 
 
+def test_gpu_runtime_handles_non_numeric_device_count(tmp_path, monkeypatch):
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    _write_worker_status_file(
+        data_root,
+        device_count="bogus",
+        torch_cuda_version="12.6",
+    )
+
+    settings = _settings(tmp_path, data_root=data_root)
+    monkeypatch.setattr(
+        system_status,
+        "_probe_spark_runtime",
+        lambda _settings: {
+            "state": "healthy",
+            "value": "Online",
+            "detail": "dgx.local responded to /v1/models",
+            "host": "dgx.local",
+            "advertised_models": ["gpt-oss:120b"],
+            "model_verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        system_status,
+        "_active_job_snapshot",
+        lambda _settings: {
+            "started_total": 0,
+            "queued_total": 0,
+            "active_job": None,
+            "queued_job": None,
+            "active_recording": None,
+            "active_detail": None,
+            "active_stage": "",
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(
+        system_status,
+        "collect_cuda_runtime_facts",
+        lambda: CudaRuntimeFacts(
+            is_available=False,
+            device_count=0,
+            visible_devices=None,
+            torch_cuda_version=None,
+        ),
+    )
+    monkeypatch.setattr(system_status, "_probe_nvidia_smi", lambda: _nvidia_smi_probe())
+
+    payload = system_status.collect_control_center_runtime_status(settings)
+    gpu_item = payload["items"][1]
+    assert gpu_item["value"] == "GPU ready"
+    assert gpu_item["detail"] == "worker sees 1 GPU(s) · CUDA 12.6"
+
+
 def test_gpu_runtime_reports_worker_busy_from_queue(tmp_path, monkeypatch):
     data_root = tmp_path / "data"
     data_root.mkdir()

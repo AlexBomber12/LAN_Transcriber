@@ -68,7 +68,8 @@ def is_worker_status_fresh(
     if heartbeat.tzinfo is None:
         heartbeat = heartbeat.replace(tzinfo=timezone.utc)
     current = now or datetime.now(tz=timezone.utc)
-    return (current - heartbeat) <= WORKER_STATUS_STALE_AFTER
+    delta = current - heartbeat
+    return timedelta(0) <= delta <= WORKER_STATUS_STALE_AFTER
 
 
 def run_heartbeat_loop(

@@ -437,7 +437,8 @@ def _worker_gpu_runtime_item(
     if not is_worker_status_fresh(status):
         return None
     if bool(status.get("gpu_available")):
-        device_count = max(int(status.get("device_count") or 0), 1)
+        parsed_count = _parse_int(status.get("device_count")) or 0
+        device_count = max(parsed_count, 1)
         torch_cuda = str(status.get("torch_cuda_version") or "").strip() or "unknown"
         return {
             "label": "GPU runtime",

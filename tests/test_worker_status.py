@@ -109,6 +109,9 @@ def test_is_worker_status_fresh_variants() -> None:
     z_suffixed = (now - timedelta(minutes=3)).isoformat().replace("+00:00", "Z")
     assert worker_status.is_worker_status_fresh({"last_heartbeat": z_suffixed}, now=now) is True
 
+    future_ts = (now + timedelta(minutes=5)).isoformat()
+    assert worker_status.is_worker_status_fresh({"last_heartbeat": future_ts}, now=now) is False
+
 
 def test_is_worker_status_fresh_defaults_now(monkeypatch) -> None:
     heartbeat = datetime.now(tz=timezone.utc).isoformat()
