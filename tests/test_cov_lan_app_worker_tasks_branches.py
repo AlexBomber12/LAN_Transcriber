@@ -1554,7 +1554,8 @@ def test_apply_speaker_merge_step_applies_merge(
                 "speaker_a": "S1",
                 "speaker_b": "S2",
                 "similarity": 0.95,
-                "overlap": False,
+                "overlap_ratio": 0.0,
+                "has_meaningful_overlap": False,
                 "action": "merged",
             }
         ],

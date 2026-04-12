@@ -1891,6 +1891,7 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
         speaker_merge_similarity_threshold=settings.speaker_merge_similarity_threshold,
         speaker_merge_no_overlap_similarity_threshold=settings.speaker_merge_no_overlap_similarity_threshold,
         speaker_merge_max_segments=settings.speaker_merge_max_segments,
+        speaker_merge_overlap_ratio_threshold=settings.speaker_merge_overlap_ratio_threshold,
         speaker_turn_merge_gap_sec=settings.speaker_turn_merge_gap_sec,
         speaker_turn_short_merge_gap_sec=settings.speaker_turn_short_merge_gap_sec,
         speaker_turn_min_words=settings.speaker_turn_min_words,
@@ -2249,6 +2250,7 @@ def _apply_speaker_merge_step(
                 similarity_threshold=pipeline_settings.speaker_merge_similarity_threshold,
                 no_overlap_similarity_threshold=pipeline_settings.speaker_merge_no_overlap_similarity_threshold,
                 max_segments_per_speaker=pipeline_settings.speaker_merge_max_segments,
+                overlap_ratio_threshold=pipeline_settings.speaker_merge_overlap_ratio_threshold,
             )
             speaker_merge_diagnostics.update(merge_run_diagnostics)
             speaker_merge_diagnostics["skipped_reason"] = None

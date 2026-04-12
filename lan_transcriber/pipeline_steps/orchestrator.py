@@ -80,6 +80,7 @@ from .snippets import SnippetExportRequest, export_speaker_snippets, write_empty
 from .speaker_merge import (
     DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
     DEFAULT_SPEAKER_MERGE_NO_OVERLAP_SIMILARITY_THRESHOLD,
+    DEFAULT_SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD,
     DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
     EmbeddingModel,
     merge_similar_speakers,
@@ -500,6 +501,16 @@ class Settings(BaseSettings):
             "speaker_merge_max_segments",
             "SPEAKER_MERGE_MAX_SEGMENTS",
             "LAN_SPEAKER_MERGE_MAX_SEGMENTS",
+        ),
+    )
+    speaker_merge_overlap_ratio_threshold: float = Field(
+        default=DEFAULT_SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices(
+            "speaker_merge_overlap_ratio_threshold",
+            "SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD",
+            "LAN_SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD",
         ),
     )
 
@@ -3198,6 +3209,7 @@ async def run_pipeline(
                     similarity_threshold=cfg.speaker_merge_similarity_threshold,
                     no_overlap_similarity_threshold=cfg.speaker_merge_no_overlap_similarity_threshold,
                     max_segments_per_speaker=cfg.speaker_merge_max_segments,
+                    overlap_ratio_threshold=cfg.speaker_merge_overlap_ratio_threshold,
                 )
                 speaker_merge_diagnostics.update(merge_run_diagnostics)
                 speaker_merge_diagnostics["skipped_reason"] = None
