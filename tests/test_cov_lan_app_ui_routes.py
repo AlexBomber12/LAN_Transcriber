@@ -4611,7 +4611,7 @@ def test_recording_title_edit_view_and_patch(
     assert default_view.status_code == 200
     assert "recording-title-edit-full_page" in default_view.text
     assert "recording-title-display-full_page" in default_view.text
-    assert "(auto)" in default_view.text
+    assert "(auto)" not in default_view.text
     assert "recording-title-edit-button-full_page" in default_view.text
 
     compact_view = c.get(
@@ -4668,7 +4668,7 @@ def test_recording_title_edit_view_and_patch(
         data={"display_title": "   "},
     )
     assert cleared.status_code == 200
-    assert "(auto)" in cleared.text
+    assert "(auto)" not in cleared.text
     stored_after = _get_recording(recording_id, settings=cfg)
     assert stored_after is not None
     assert stored_after.get("display_title") in (None, "")
