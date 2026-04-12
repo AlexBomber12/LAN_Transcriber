@@ -731,7 +731,7 @@ Queue (in order)
 - Depends on: PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01
 
 146) PR-ASR-FORCE-TRANSCRIBE-01: Force task=transcribe in WhisperX to prevent translation on multilingual recordings
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-ASR-FORCE-TRANSCRIBE-01.md
 - Depends on: PR-SPEAKER-MERGE-DUAL-THRESHOLD-01
 

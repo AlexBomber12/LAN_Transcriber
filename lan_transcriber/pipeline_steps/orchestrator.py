@@ -1580,6 +1580,7 @@ def _build_whisperx_transcriber(
         ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             kwargs: dict[str, Any] = {
                 "vad_filter": True,
+                "task": "transcribe",
                 "language": override_lang or "auto",
                 "word_timestamps": True,
                 **glossary_kwargs,
@@ -1672,6 +1673,7 @@ def _build_whisperx_transcriber(
         transcribe_kwargs: dict[str, Any] = {
             "batch_size": cfg.asr_batch_size,
             "vad_filter": True,
+            "task": "transcribe",
             "language": (override_lang if override_lang else None),
             **glossary_kwargs,
         }
