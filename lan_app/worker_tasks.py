@@ -1889,6 +1889,7 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
         diarization_flicker_max_consecutive=settings.diarization_flicker_max_consecutive,
         speaker_merge_enabled=settings.speaker_merge_enabled,
         speaker_merge_similarity_threshold=settings.speaker_merge_similarity_threshold,
+        speaker_merge_no_overlap_similarity_threshold=settings.speaker_merge_no_overlap_similarity_threshold,
         speaker_merge_max_segments=settings.speaker_merge_max_segments,
         speaker_turn_merge_gap_sec=settings.speaker_turn_merge_gap_sec,
         speaker_turn_short_merge_gap_sec=settings.speaker_turn_short_merge_gap_sec,
@@ -2246,6 +2247,7 @@ def _apply_speaker_merge_step(
                 audio_path=working_audio_path,
                 embedding_model=embedding_model,
                 similarity_threshold=pipeline_settings.speaker_merge_similarity_threshold,
+                no_overlap_similarity_threshold=pipeline_settings.speaker_merge_no_overlap_similarity_threshold,
                 max_segments_per_speaker=pipeline_settings.speaker_merge_max_segments,
             )
             speaker_merge_diagnostics.update(merge_run_diagnostics)

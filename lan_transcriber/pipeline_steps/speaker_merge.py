@@ -43,6 +43,7 @@ from lan_transcriber.utils import safe_float
 EmbeddingModel = Callable[[Path, float, float], "Any"]
 
 DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD = 0.80
+DEFAULT_SPEAKER_MERGE_NO_OVERLAP_SIMILARITY_THRESHOLD = 0.70
 DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS = 5
 DEFAULT_SPEAKER_MERGE_SEGMENT_DURATION_SEC = 3.0
 DEFAULT_SPEAKER_MERGE_OVERLAP_TOLERANCE_SEC = 0.1
@@ -339,6 +340,7 @@ def merge_similar_speakers(
     audio_path: Path,
     embedding_model: EmbeddingModel | None,
     similarity_threshold: float = DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
+    no_overlap_similarity_threshold: float = DEFAULT_SPEAKER_MERGE_NO_OVERLAP_SIMILARITY_THRESHOLD,
     max_segments_per_speaker: int = DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
     segment_duration_sec: float = DEFAULT_SPEAKER_MERGE_SEGMENT_DURATION_SEC,
     overlap_tolerance_sec: float = DEFAULT_SPEAKER_MERGE_OVERLAP_TOLERANCE_SEC,
@@ -407,16 +409,20 @@ def merge_similar_speakers(
                     "similarity": float(similarity),
                     "overlap": False,
                     "action": "skipped_already_merged",
+                    "effective_threshold": None,
                 }
             )
             continue
-        if similarity < similarity_threshold:
+        # Pairs are sorted by similarity descending.  If below the relaxed
+        # (lower) threshold, all remaining pairs will also be below it.
+        if similarity < no_overlap_similarity_threshold:
             _logger.info(
-                "speaker_merge: skip %s<->%s similarity=%.3f < threshold=%.3f",
+                "speaker_merge: skip %s<->%s similarity=%.3f < "
+                "no_overlap_threshold=%.3f",
                 left_speaker,
                 right_speaker,
                 similarity,
-                similarity_threshold,
+                no_overlap_similarity_threshold,
             )
             diagnostics["pairwise_scores"].append(
                 {
@@ -425,9 +431,10 @@ def merge_similar_speakers(
                     "similarity": float(similarity),
                     "overlap": False,
                     "action": "skipped_low_similarity",
+                    "effective_threshold": float(no_overlap_similarity_threshold),
                 }
             )
-            continue
+            break
         # Use a fresh copy of the original segments but with previously decided
         # merges applied so overlap detection sees the post-merge world.
         overlap_segments: list[dict[str, Any]] = []
@@ -436,12 +443,37 @@ def merge_similar_speakers(
                 merge_map, str(row.get("speaker") or "")
             )
             overlap_segments.append({**row, "speaker": speaker})
-        if speakers_overlap(
+        has_overlap = speakers_overlap(
             left_target,
             right_target,
             overlap_segments,
             tolerance_sec=overlap_tolerance_sec,
-        ):
+        )
+        effective_threshold = (
+            similarity_threshold if has_overlap else no_overlap_similarity_threshold
+        )
+        if similarity < effective_threshold:
+            _logger.info(
+                "speaker_merge: skip %s<->%s similarity=%.3f < "
+                "effective_threshold=%.3f (overlap=%s)",
+                left_speaker,
+                right_speaker,
+                similarity,
+                effective_threshold,
+                has_overlap,
+            )
+            diagnostics["pairwise_scores"].append(
+                {
+                    "speaker_a": left_speaker,
+                    "speaker_b": right_speaker,
+                    "similarity": float(similarity),
+                    "overlap": has_overlap,
+                    "action": "skipped_low_similarity",
+                    "effective_threshold": float(effective_threshold),
+                }
+            )
+            continue
+        if has_overlap:
             _logger.info(
                 "speaker_merge: skip %s<->%s similarity=%.3f overlap=True",
                 left_speaker,
@@ -455,6 +487,7 @@ def merge_similar_speakers(
                     "similarity": float(similarity),
                     "overlap": True,
                     "action": "skipped_overlap",
+                    "effective_threshold": float(effective_threshold),
                 }
             )
             continue
@@ -477,6 +510,7 @@ def merge_similar_speakers(
                 "similarity": float(similarity),
                 "overlap": False,
                 "action": "merged",
+                "effective_threshold": float(effective_threshold),
             }
         )
         _logger.info(
@@ -517,6 +551,7 @@ def merge_similar_speakers(
 
 __all__ = [
     "DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS",
+    "DEFAULT_SPEAKER_MERGE_NO_OVERLAP_SIMILARITY_THRESHOLD",
     "DEFAULT_SPEAKER_MERGE_OVERLAP_TOLERANCE_SEC",
     "DEFAULT_SPEAKER_MERGE_SEGMENT_DURATION_SEC",
     "DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD",
