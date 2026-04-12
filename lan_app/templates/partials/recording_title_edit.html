@@ -6,13 +6,6 @@
     title_edit.rec.title_is_user_set   bool
     title_edit.mode                    "full_page" | "compact"
     title_edit.editing                 bool
-  Optional context:
-    title_edit.preserve_on_refresh     bool
-      When true, hx-preserve="true" is rendered on the outer container so
-      that ancestor polling swaps (e.g. inspector pane every-2s refresh)
-      keep the existing element — including any open edit form. Direct
-      swaps targeting this element by id (Save/Cancel/Edit endpoints) must
-      omit this flag so HTMX replaces the element normally.
 #}
 {% set _mode = 'compact' if title_edit.mode == 'compact' else 'full_page' %}
 {% set _rec = title_edit.rec %}
@@ -24,7 +17,6 @@
   id="{{ _dom_id }}"
   class="flex items-center gap-2 flex-wrap"
   data-testid="recording-title-edit-{{ _mode }}"
-  {% if title_edit.preserve_on_refresh %}hx-preserve="true"{% endif %}
 >
   {% if title_edit.editing %}
   <form
