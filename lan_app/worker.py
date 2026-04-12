@@ -9,6 +9,7 @@ from rq import Worker
 
 from .config import AppSettings
 from .db import init_db
+from .worker_status import start_heartbeat_thread, write_worker_status
 
 _logger = logging.getLogger(__name__)
 
@@ -32,6 +33,8 @@ def _install_signal_handlers(worker: Worker) -> None:
 def main() -> None:
     settings = AppSettings()
     init_db(settings)
+    write_worker_status(settings.data_root)
+    start_heartbeat_thread(settings.data_root)
     connection = Redis.from_url(settings.redis_url)
     worker = Worker([settings.rq_queue_name], connection=connection)
     _install_signal_handlers(worker)

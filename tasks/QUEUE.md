@@ -736,7 +736,7 @@ Queue (in order)
 - Depends on: PR-SPEAKER-MERGE-DUAL-THRESHOLD-01
 
 147) PR-GPU-STATUS-FIX-01: Fix system bar GPU status showing CPU only when worker uses GPU
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-GPU-STATUS-FIX-01.md
 - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
 

@@ -431,9 +431,21 @@ def test_worker_signal_handlers_and_main(monkeypatch):
         redis_url="redis://unit",
         rq_queue_name="audio",
         rq_worker_burst=True,
+        data_root=Path("/tmp/worker-main-data"),
     )
     monkeypatch.setattr(worker, "AppSettings", lambda: settings)
     monkeypatch.setattr(worker, "init_db", lambda cfg: calls.setdefault("init_db", cfg))
+    monkeypatch.setattr(
+        worker,
+        "write_worker_status",
+        lambda data_root: calls.setdefault("write_status", data_root),
+    )
+    monkeypatch.setattr(
+        worker,
+        "start_heartbeat_thread",
+        lambda data_root: calls.setdefault("heartbeat_root", data_root)
+        or (None, None),
+    )
     connection = object()
 
     def _redis_from_url(url):
@@ -460,18 +472,34 @@ def test_worker_signal_handlers_and_main(monkeypatch):
     assert calls["connection"] is connection
     assert calls["work"] == (False, True)
     assert calls["handler_worker"] is not None
+    assert calls["write_status"] == settings.data_root
+    assert calls["heartbeat_root"] == settings.data_root
 
 
 def test_worker_module_main_guard(monkeypatch):
+    from lan_app import worker_status as worker_status_module
+
     calls: dict[str, object] = {}
     settings = SimpleNamespace(
         redis_url="redis://guard",
         rq_queue_name="guard-queue",
         rq_worker_burst=False,
+        data_root=Path("/tmp/worker-guard-data"),
     )
     monkeypatch.setattr(config_module, "AppSettings", lambda: settings)
     monkeypatch.setattr(db_module, "init_db", lambda cfg: calls.setdefault("init_db", cfg))
     monkeypatch.setattr(signal, "signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        worker_status_module,
+        "write_worker_status",
+        lambda data_root: calls.setdefault("write_status", data_root),
+    )
+    monkeypatch.setattr(
+        worker_status_module,
+        "start_heartbeat_thread",
+        lambda data_root: calls.setdefault("heartbeat_root", data_root)
+        or (None, None),
+    )
 
     import redis
     import rq
@@ -495,6 +523,8 @@ def test_worker_module_main_guard(monkeypatch):
     assert calls["init_db"] is settings
     assert calls["queues"] == ["guard-queue"]
     assert calls["work"] == (False, False)
+    assert calls["write_status"] == settings.data_root
+    assert calls["heartbeat_root"] == settings.data_root
 
 
 @pytest.mark.asyncio
