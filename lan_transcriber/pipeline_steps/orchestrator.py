@@ -3463,8 +3463,8 @@ async def run_pipeline(
                 default_topic=cal_title or "Meeting summary",
                 derived_dir=artifacts.summary_json_path.parent,
             )
-        serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in speaker_turns]
-        speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in speaker_turns))
+        serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in transcript_speaker_turns]
+        speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in transcript_speaker_turns))
         atomic_write_text(artifacts.transcript_txt_path, clean_text)
         payload = _finalize_transcript_payload(
             _base_transcript_payload(
@@ -3493,7 +3493,7 @@ async def run_pipeline(
         )
         atomic_write_json(artifacts.transcript_json_path, payload)
         atomic_write_json(artifacts.segments_json_path, diar_segments)
-        atomic_write_json(artifacts.speaker_turns_json_path, speaker_turns)
+        atomic_write_json(artifacts.speaker_turns_json_path, transcript_speaker_turns)
         atomic_write_json(artifacts.summary_json_path, summary_payload)
         await _emit_progress(progress_callback, stage="metrics", progress=0.98)
         atomic_write_json(

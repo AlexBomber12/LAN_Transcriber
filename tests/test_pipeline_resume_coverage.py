@@ -1291,6 +1291,15 @@ def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
     speaker_lines = transcript_payload.get("speaker_lines") or []
     assert any("SPEAKER_REAL" in line for line in speaker_lines)
     assert all("SPEAKER_NOISE" not in line for line in speaker_lines)
+    assert "SPEAKER_NOISE" not in (transcript_payload.get("speakers") or [])
+    assert "SPEAKER_REAL" in (transcript_payload.get("speakers") or [])
+    persisted_turns = json.loads(
+        ctx.artifacts.recording_artifacts.speaker_turns_json_path.read_text(encoding="utf-8")
+    )
+    assert all(
+        str(turn.get("speaker")) != "SPEAKER_NOISE" for turn in persisted_turns
+    )
+    assert any(str(turn.get("speaker")) == "SPEAKER_REAL" for turn in persisted_turns)
 
 
 def test_snippet_manifest_helpers_cover_edge_cases(tmp_path: Path) -> None:

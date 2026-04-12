@@ -3571,7 +3571,7 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
             speakers=sorted(
                 {
                     aliases.get(str(turn.get("speaker") or "S1"), str(turn.get("speaker") or "S1"))
-                    for turn in ctx.speaker_turns
+                    for turn in transcript_speaker_turns
                 }
             ),
             text=ctx.clean_text,
@@ -3583,7 +3583,9 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
     atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, ctx.clean_text)
     atomic_write_json(ctx.artifacts.recording_artifacts.transcript_json_path, transcript_payload)
     atomic_write_json(ctx.artifacts.recording_artifacts.segments_json_path, ctx.diarization_segments)
-    atomic_write_json(ctx.artifacts.recording_artifacts.speaker_turns_json_path, ctx.speaker_turns)
+    atomic_write_json(
+        ctx.artifacts.recording_artifacts.speaker_turns_json_path, transcript_speaker_turns
+    )
     atomic_write_json(ctx.artifacts.recording_artifacts.summary_json_path, ctx.summary_payload)
     return _StageResult(
         status="completed",

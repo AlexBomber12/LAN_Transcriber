@@ -3712,6 +3712,17 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
     speaker_lines = transcript.get("speaker_lines") or []
     assert any("S1" in line for line in speaker_lines)
     assert all("S2" not in line for line in speaker_lines)
+    assert "S1" in (transcript.get("speakers") or [])
+    assert "S2" not in (transcript.get("speakers") or [])
+    persisted_turns = json.loads(
+        (cfg.recordings_root / "rec-noise-filter" / "derived" / "speaker_turns.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert all(str(turn.get("speaker")) != "S2" for turn in persisted_turns)
+    assert any(str(turn.get("speaker")) == "S1" for turn in persisted_turns)
+    assert all(seg.speaker != "S2" for seg in result.segments)
+    assert any(seg.speaker == "S1" for seg in result.segments)
 
 
 @pytest.mark.asyncio
