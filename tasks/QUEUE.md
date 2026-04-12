@@ -725,7 +725,32 @@ Queue (in order)
 - Tasks file: tasks/PR-FORCE-REPROCESS-01.md
 - Depends on: PR-ARTIFACT-SINGLE-WRITER-01
 
-145) PR-SPEAKER-MERGE-DUAL-THRESHOLD-01: Dual similarity threshold and overlap ratio tolerance for speaker merge
+145) PR-SPEAKER-MERGE-DUAL-THRESHOLD-01: Dual similarity threshold for speaker merge: strict when overlap, relaxed when no overlap
 - Status: DONE
 - Tasks file: tasks/PR-SPEAKER-MERGE-DUAL-THRESHOLD-01.md
 - Depends on: PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01
+
+146) PR-ASR-FORCE-TRANSCRIBE-01: Force task=transcribe in WhisperX to prevent translation on multilingual recordings
+- Status: TODO
+- Tasks file: tasks/PR-ASR-FORCE-TRANSCRIBE-01.md
+- Depends on: PR-SPEAKER-MERGE-DUAL-THRESHOLD-01
+
+147) PR-GPU-STATUS-FIX-01: Fix system bar GPU status showing CPU only when worker uses GPU
+- Status: TODO
+- Tasks file: tasks/PR-GPU-STATUS-FIX-01.md
+- Depends on: PR-ASR-FORCE-TRANSCRIBE-01
+
+148) PR-TITLE-EDIT-FIX-01: Fix title edit reset during processing and remove (auto) indicator
+- Status: TODO
+- Tasks file: tasks/PR-TITLE-EDIT-FIX-01.md
+- Depends on: PR-ASR-FORCE-TRANSCRIBE-01
+
+149) PR-REMOVE-QUEUE-PAGE-01: Remove Queue page from navigation
+- Status: TODO
+- Tasks file: tasks/PR-REMOVE-QUEUE-PAGE-01.md
+- Depends on: PR-ASR-FORCE-TRANSCRIBE-01
+
+150) PR-NOISE-SPEAKER-FILTER-01: Detect and flag noise-only diarization speakers based on snippet VAD analysis
+- Status: TODO
+- Tasks file: tasks/PR-NOISE-SPEAKER-FILTER-01.md
+- Depends on: PR-ASR-FORCE-TRANSCRIBE-01
