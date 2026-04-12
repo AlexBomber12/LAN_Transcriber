@@ -3537,7 +3537,10 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
     ctx.summary_payload = _load_summary_payload(ctx)
     transcript_speaker_turns = ctx.speaker_turns
     transcript_text = ctx.clean_text
-    if ctx.pipeline_settings.exclude_noise_speakers_from_transcript:
+    if (
+        ctx.pipeline_settings.noise_detection_enabled
+        and ctx.pipeline_settings.exclude_noise_speakers_from_transcript
+    ):
         diarization_metadata = _load_json_dict(
             ctx.artifacts.recording_artifacts.diarization_metadata_json_path
         )

@@ -1209,6 +1209,101 @@ def test_stage_export_artifacts_exclude_noise_handles_missing_or_empty_noise_lis
     assert any("S1" in line for line in speaker_lines)
 
 
+def test_stage_export_artifacts_skips_filter_when_noise_detection_disabled(
+    tmp_path: Path,
+) -> None:
+    """When noise detection is off, stale noise_speakers metadata must not filter turns."""
+
+    cfg, ctx = _new_ctx(
+        tmp_path, "rec-export-stale-noise", create_raw_audio=True
+    )
+    ctx.pipeline_settings.noise_detection_enabled = False
+    ctx.pipeline_settings.exclude_noise_speakers_from_transcript = True
+    ctx.pipeline_settings.llm_model = "stub-model"
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
+    ctx.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+        json.dumps(
+            {"degraded": False, "noise_speakers": ["SPEAKER_NOISE"]}
+        ),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_segments_json_path.write_text(
+        json.dumps(
+            [
+                {"speaker": "SPEAKER_REAL", "start": 0.0, "end": 1.0},
+                {"speaker": "SPEAKER_NOISE", "start": 1.0, "end": 1.5},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps(
+            [
+                {
+                    "speaker": "SPEAKER_REAL",
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "hello team this is the real speaker speaking now",
+                },
+                {
+                    "speaker": "SPEAKER_NOISE",
+                    "start": 1.0,
+                    "end": 1.5,
+                    "text": "background noise hiss static hum buzz",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    snippets_dir = ctx.artifacts.recording_artifacts.snippets_dir
+    snippets_dir.mkdir(parents=True, exist_ok=True)
+    (snippets_dir.parent / "snippets_manifest.json").write_text(
+        json.dumps({"version": 1, "speakers": {}, "manifest_status": "ok"}),
+        encoding="utf-8",
+    )
+    derived = ctx.artifacts.derived_dir
+    (derived / "language_analysis.json").write_text(
+        json.dumps(
+            {
+                "language": {"detected": "en", "confidence": 0.9},
+                "dominant_language": "en",
+                "language_distribution": {"en": 1.0},
+                "language_spans": [],
+                "segments": [
+                    {
+                        "text": "hello team this is the real speaker speaking now and also background noise hiss static hum buzz",
+                        "start": 0.0,
+                        "end": 1.5,
+                    }
+                ],
+                "target_summary_language": "en",
+                "review": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "asr_execution.json").write_text(
+        json.dumps({"used_multilingual_path": False, "selected_mode": "single_language"}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.summary_json_path.write_text(
+        json.dumps({"status": "ok", "summary": "ok"}),
+        encoding="utf-8",
+    )
+
+    result = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
+    assert result.status == "completed"
+    persisted_turns = json.loads(
+        ctx.artifacts.recording_artifacts.speaker_turns_json_path.read_text(encoding="utf-8")
+    )
+    assert any(str(turn.get("speaker")) == "SPEAKER_NOISE" for turn in persisted_turns)
+
+
 def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
