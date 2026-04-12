@@ -725,7 +725,7 @@ Queue (in order)
 - Tasks file: tasks/PR-FORCE-REPROCESS-01.md
 - Depends on: PR-ARTIFACT-SINGLE-WRITER-01
 
-145) PR-SPEAKER-MERGE-DUAL-THRESHOLD-01: Dual similarity threshold for speaker merge: strict when overlap, relaxed when no overlap
-- Status: DONE
+145) PR-SPEAKER-MERGE-DUAL-THRESHOLD-01: Dual similarity threshold and overlap ratio tolerance for speaker merge
+- Status: TODO
 - Tasks file: tasks/PR-SPEAKER-MERGE-DUAL-THRESHOLD-01.md
 - Depends on: PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01
