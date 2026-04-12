@@ -3723,6 +3723,12 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
     assert any(str(turn.get("speaker")) == "S1" for turn in persisted_turns)
     assert all(seg.speaker != "S2" for seg in result.segments)
     assert any(seg.speaker == "S1" for seg in result.segments)
+    metrics_payload = json.loads(
+        (cfg.recordings_root / "rec-noise-filter" / "derived" / "metrics.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metrics_payload["speaker_turns"] == len(persisted_turns)
 
 
 @pytest.mark.asyncio

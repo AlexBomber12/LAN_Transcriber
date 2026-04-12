@@ -3508,7 +3508,7 @@ async def run_pipeline(
                 "language": language_info,
                 "asr_segments": len(language_analysis.segments),
                 "diar_segments": len(diar_segments),
-                "speaker_turns": len(speaker_turns),
+                "speaker_turns": len(transcript_speaker_turns),
                 "snippets": len(snippet_paths),
                 "multilingual_asr": {
                     "used_multilingual_path": bool(
