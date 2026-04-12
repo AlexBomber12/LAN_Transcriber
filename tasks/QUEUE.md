@@ -741,7 +741,7 @@ Queue (in order)
 - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
 
 148) PR-TITLE-EDIT-FIX-01: Fix title edit reset during processing and remove (auto) indicator
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-TITLE-EDIT-FIX-01.md
 - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
 

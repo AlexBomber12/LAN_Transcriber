@@ -68,12 +68,5 @@
     title="Edit title"
     data-testid="recording-title-edit-button-{{ _mode }}"
   ><span class="material-symbols-outlined text-base">edit</span></button>
-  {% if not _rec.title_is_user_set %}
-  <span
-    class="text-[11px] text-slate-400 italic"
-    title="Title is auto-derived. Click the pencil to set a custom title."
-    data-testid="recording-title-auto-indicator-{{ _mode }}"
-  >(auto)</span>
-  {% endif %}
   {% endif %}
 </div>

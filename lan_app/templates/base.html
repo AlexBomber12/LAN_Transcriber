@@ -202,6 +202,22 @@ if (document.body && !window.__controlCenterShellAfterSwapBound) {
     var activeTab = target.querySelector('[data-active-tab="true"]');
     refreshControlCenterShellFromHref(activeTab ? activeTab.getAttribute('href') : '');
   });
+  // Suppress the inspector pane's own refresh requests while an inline title
+  // edit form is open inside the pane. Without this, the every-2s poll (and
+  // any refresh-control-center-inspector triggers) would replace the form mid
+  // edit and discard the user's input. Direct Save/Cancel/Edit requests are
+  // initiated by the form/buttons themselves (different elt), so they pass
+  // through normally and the display refresh resumes once the form closes.
+  document.body.addEventListener('htmx:beforeRequest', function (event) {
+    var detail = event && event.detail;
+    var elt = detail ? detail.elt : null;
+    if (!elt || elt.id !== 'control-center-inspector-pane-content') {
+      return;
+    }
+    if (elt.querySelector('input[name="display_title"]')) {
+      event.preventDefault();
+    }
+  });
   window.__controlCenterShellAfterSwapBound = true;
 }
 
