@@ -3346,10 +3346,14 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
                     for turn in ctx.speaker_turns
                     if str(turn.get("speaker") or "S1") not in noise_set
                 ]
-                # Only swap LLM inputs when at least one turn was actually
-                # removed; stale labels shouldn't force a speaker-turn-derived
-                # prompt when no exclusion has happened.
-                if len(filtered_turns) != len(ctx.speaker_turns):
+                # Adopt the filtered set when the filter actually removed
+                # turns this run OR when a prior run already applied it
+                # (rerun: speaker_turns.json on disk is already filtered).
+                filter_removed = len(filtered_turns) != len(ctx.speaker_turns)
+                filter_already_applied = bool(
+                    diarization_metadata.get("noise_filter_applied")
+                )
+                if filter_removed or filter_already_applied:
                     summary_speaker_turns = filtered_turns
                     summary_text = normalizer.dedup(
                         " ".join(
@@ -3535,6 +3539,7 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
     )
     transcript_speaker_turns = ctx.speaker_turns
     transcript_text = ctx.clean_text
+    noise_filter_active = False
     if (
         ctx.pipeline_settings.noise_detection_enabled
         and ctx.pipeline_settings.exclude_noise_speakers_from_transcript
@@ -3551,17 +3556,30 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
                     for turn in ctx.speaker_turns
                     if str(turn.get("speaker") or "S1") not in noise_set
                 ]
-                # Only swap the transcript inputs when a real turn was
-                # removed. Stale noise_speakers labels that don't match any
-                # current speaker would otherwise silently replace the ASR
-                # clean_text with a speaker-turn-derived string.
-                if len(filtered_turns) != len(ctx.speaker_turns):
+                # Two ways the filter is "active":
+                # - It actually removes turns this run (fresh run).
+                # - A prior run already applied it (rerun: speaker_turns.json
+                #   on disk is already filtered, so removal is a no-op now).
+                # The persisted noise_filter_applied flag distinguishes the
+                # rerun case from harmless stale-label drift.
+                filter_removed = len(filtered_turns) != len(ctx.speaker_turns)
+                filter_already_applied = bool(
+                    diarization_metadata.get("noise_filter_applied")
+                )
+                noise_filter_active = filter_removed or filter_already_applied
+                if noise_filter_active:
                     transcript_speaker_turns = filtered_turns
                     transcript_text = normalizer.dedup(
                         " ".join(
                             str(turn.get("text") or "").strip()
                             for turn in transcript_speaker_turns
                         ).strip()
+                    )
+                if filter_removed and not filter_already_applied:
+                    diarization_metadata["noise_filter_applied"] = True
+                    atomic_write_json(
+                        ctx.artifacts.recording_artifacts.diarization_metadata_json_path,
+                        diarization_metadata,
                     )
     if not transcript_text:
         speakers = sorted(
@@ -3634,14 +3652,12 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
         ],
         ctx.pipeline_settings.merge_similar,
     )
-    # When noise exclusion actually removed turns (value-based check, not
-    # identity: the list is always fresh when noise_set is non-empty even if
-    # no labels match), replace raw ASR language_segments with the filtered
-    # speaker turns so transcript.json consumers (UI fallbacks, metrics)
-    # can't resurface excluded content.
-    filter_removed_turns = len(transcript_speaker_turns) != len(ctx.speaker_turns)
+    # When the noise filter is active (fresh removal or persisted-from-prior-run),
+    # swap raw ASR language_segments for the filtered speaker turns so
+    # transcript.json consumers (UI fallbacks, metrics) can't resurface
+    # excluded content.
     transcript_segments = (
-        list(transcript_speaker_turns) if filter_removed_turns else language_segments
+        list(transcript_speaker_turns) if noise_filter_active else language_segments
     )
     transcript_payload = pipeline_orchestrator._finalize_transcript_payload(
         pipeline_orchestrator._base_transcript_payload(
