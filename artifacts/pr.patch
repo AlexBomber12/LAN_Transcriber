@@ -1,18 +1,71 @@
-diff --git a/ci-requirements.txt b/ci-requirements.txt
-index 2fe65fa..7b9e2f2 100644
---- a/ci-requirements.txt
-+++ b/ci-requirements.txt
-@@ -64,11 +64,11 @@ pluggy==1.6.0
-     # via pytest
- prometheus-client==0.25.0
-     # via -r ci-requirements.in
--pydantic==2.12.5
-+pydantic==2.13.0
-     # via
-     #   fastapi
-     #   pydantic-settings
--pydantic-core==2.41.5
-+pydantic-core==2.46.0
-     # via pydantic
- pydantic-settings==2.10.1
-     # via -r ci-requirements.in
+diff --git a/lan_app/snippet_repair.py b/lan_app/snippet_repair.py
+index 64a66a1..9337479 100644
+--- a/lan_app/snippet_repair.py
++++ b/lan_app/snippet_repair.py
+@@ -687,18 +687,22 @@ def repair_recording_snippets(
+         pipeline_settings=pipeline_settings,
+     )
+     _replace_staged_snippet_outputs(recording_id, staged_root, settings=cfg)
+-    if pipeline_settings.noise_detection_enabled:
+-        summary_source = noise_summary or {}
+-        update_diarization_metadata_with_noise(
+-            _derived_dir(recording_id, settings=cfg) / "diarization_metadata.json",
+-            summary={
+-                "noise_speakers": list(summary_source.get("noise_speakers") or []),
+-                "speaker_metrics": dict(summary_source.get("speaker_metrics") or {}),
+-                "threshold": summary_source.get(
+-                    "threshold", pipeline_settings.noise_speech_ratio_threshold
+-                ),
+-            },
+-        )
++    summary_source = noise_summary or {}
++    # Always refresh diarization_metadata noise fields so a repair leaves them
++    # consistent with the repaired manifest. When detection is disabled we
++    # write an explicit empty summary to wipe stale noise_speakers/metrics that
++    # would otherwise persist from a prior detection-enabled run and bleed
++    # into transcript-export filtering on resume paths.
++    update_diarization_metadata_with_noise(
++        _derived_dir(recording_id, settings=cfg) / "diarization_metadata.json",
++        summary={
++            "noise_speakers": list(summary_source.get("noise_speakers") or []),
++            "speaker_metrics": dict(summary_source.get("speaker_metrics") or {}),
++            "threshold": summary_source.get(
++                "threshold", pipeline_settings.noise_speech_ratio_threshold
++            ),
++        },
++    )
+     metadata = snippet_export_result_metadata(manifest)
+     result = SnippetRepairResult(
+         recording_id=recording_id,
+diff --git a/tests/test_snippet_repair.py b/tests/test_snippet_repair.py
+index 0efc533..0b96556 100644
+--- a/tests/test_snippet_repair.py
++++ b/tests/test_snippet_repair.py
+@@ -838,6 +838,17 @@ def test_repair_recording_snippets_skips_noise_detection_when_disabled(
+         lambda *_a, **_k: pytest.fail("noise detection should be disabled"),
+     )
+ 
++    # Seed stale noise_speakers in diarization_metadata to simulate a prior
++    # detection-enabled run; the disabled repair must clear them so resumes
++    # don't continue applying old noise labels.
++    metadata_path = (
++        cfg.recordings_root / "rec-repair-no-noise" / "derived" / "diarization_metadata.json"
++    )
++    metadata_path.write_text(
++        json.dumps({"degraded": False, "noise_speakers": ["STALE"]}),
++        encoding="utf-8",
++    )
++
+     snippet_repair.repair_recording_snippets(
+         "rec-repair-no-noise",
+         settings=cfg,
+@@ -849,6 +860,9 @@ def test_repair_recording_snippets_skips_noise_detection_when_disabled(
+         )
+     )
+     assert "noise_speakers" not in manifest
++    persisted_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
++    assert persisted_metadata["noise_speakers"] == []
++    assert persisted_metadata["noise_speaker_metrics"] == {}
+ 
+ 
+ def test_repair_recording_snippets_is_idempotent(tmp_path: Path) -> None:

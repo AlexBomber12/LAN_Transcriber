@@ -687,18 +687,22 @@ def repair_recording_snippets(
         pipeline_settings=pipeline_settings,
     )
     _replace_staged_snippet_outputs(recording_id, staged_root, settings=cfg)
-    if pipeline_settings.noise_detection_enabled:
-        summary_source = noise_summary or {}
-        update_diarization_metadata_with_noise(
-            _derived_dir(recording_id, settings=cfg) / "diarization_metadata.json",
-            summary={
-                "noise_speakers": list(summary_source.get("noise_speakers") or []),
-                "speaker_metrics": dict(summary_source.get("speaker_metrics") or {}),
-                "threshold": summary_source.get(
-                    "threshold", pipeline_settings.noise_speech_ratio_threshold
-                ),
-            },
-        )
+    summary_source = noise_summary or {}
+    # Always refresh diarization_metadata noise fields so a repair leaves them
+    # consistent with the repaired manifest. When detection is disabled we
+    # write an explicit empty summary to wipe stale noise_speakers/metrics that
+    # would otherwise persist from a prior detection-enabled run and bleed
+    # into transcript-export filtering on resume paths.
+    update_diarization_metadata_with_noise(
+        _derived_dir(recording_id, settings=cfg) / "diarization_metadata.json",
+        summary={
+            "noise_speakers": list(summary_source.get("noise_speakers") or []),
+            "speaker_metrics": dict(summary_source.get("speaker_metrics") or {}),
+            "threshold": summary_source.get(
+                "threshold", pipeline_settings.noise_speech_ratio_threshold
+            ),
+        },
+    )
     metadata = snippet_export_result_metadata(manifest)
     result = SnippetRepairResult(
         recording_id=recording_id,

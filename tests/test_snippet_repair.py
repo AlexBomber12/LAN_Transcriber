@@ -838,6 +838,17 @@ def test_repair_recording_snippets_skips_noise_detection_when_disabled(
         lambda *_a, **_k: pytest.fail("noise detection should be disabled"),
     )
 
+    # Seed stale noise_speakers in diarization_metadata to simulate a prior
+    # detection-enabled run; the disabled repair must clear them so resumes
+    # don't continue applying old noise labels.
+    metadata_path = (
+        cfg.recordings_root / "rec-repair-no-noise" / "derived" / "diarization_metadata.json"
+    )
+    metadata_path.write_text(
+        json.dumps({"degraded": False, "noise_speakers": ["STALE"]}),
+        encoding="utf-8",
+    )
+
     snippet_repair.repair_recording_snippets(
         "rec-repair-no-noise",
         settings=cfg,
@@ -849,6 +860,9 @@ def test_repair_recording_snippets_skips_noise_detection_when_disabled(
         )
     )
     assert "noise_speakers" not in manifest
+    persisted_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert persisted_metadata["noise_speakers"] == []
+    assert persisted_metadata["noise_speaker_metrics"] == {}
 
 
 def test_repair_recording_snippets_is_idempotent(tmp_path: Path) -> None:
