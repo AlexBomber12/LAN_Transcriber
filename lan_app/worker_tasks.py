@@ -3555,8 +3555,11 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
     if not transcript_text:
         speakers = sorted(
             {
-                aliases.get(str(row.get("speaker") or "S1"), str(row.get("speaker") or "S1"))
-                for row in ctx.diarization_segments
+                aliases.get(
+                    str(turn.get("speaker") or "S1"),
+                    str(turn.get("speaker") or "S1"),
+                )
+                for turn in transcript_speaker_turns
             }
         )
         atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, "")

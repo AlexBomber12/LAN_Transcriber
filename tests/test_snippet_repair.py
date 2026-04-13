@@ -767,6 +767,54 @@ def test_replace_staged_outputs_failure_without_existing_targets(
     assert not (cfg.recordings_root / "rec-rollback-empty-1" / "derived" / "snippets").exists()
 
 
+def test_repair_recording_snippets_updates_diarization_noise_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Noise detection on repair must also refresh diarization_metadata.json."""
+
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-repair-noise-meta",
+        source="upload",
+        source_filename="repair-noise-meta.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_repair_artifacts(cfg, "rec-repair-noise-meta")
+    metadata_path = (
+        cfg.recordings_root
+        / "rec-repair-noise-meta"
+        / "derived"
+        / "diarization_metadata.json"
+    )
+    metadata_path.write_text(
+        json.dumps({"degraded": False, "noise_speakers": ["STALE_NOISE"]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        snippet_repair,
+        "apply_noise_flags_to_manifest",
+        lambda manifest_path, *, snippets_dir, threshold: {
+            "noise_speakers": ["S2"],
+            "speaker_metrics": {"S2": {"flagged": True}},
+            "threshold": threshold,
+        },
+    )
+
+    snippet_repair.repair_recording_snippets(
+        "rec-repair-noise-meta",
+        settings=cfg,
+        origin="pytest",
+    )
+
+    persisted = json.loads(metadata_path.read_text(encoding="utf-8"))
+    # Noise list is re-derived from the manifest after the move, so the
+    # stale STALE_NOISE flag must be gone and replaced with current data
+    # from the manifest (empty list since our fake did not mutate the manifest).
+    assert persisted["noise_speakers"] == []
+
+
 def test_repair_recording_snippets_skips_noise_detection_when_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

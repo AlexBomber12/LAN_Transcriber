@@ -1131,6 +1131,93 @@ def test_stage_snippet_export_skips_noise_detection_when_disabled(
     assert "noise_speakers" not in result.metadata
 
 
+def test_stage_export_artifacts_no_speech_speakers_excludes_filtered(
+    tmp_path: Path,
+) -> None:
+    """The no_speech transcript roster must reflect the filtered speaker set."""
+
+    cfg, ctx = _new_ctx(
+        tmp_path, "rec-export-nospeech-filtered", create_raw_audio=True
+    )
+    ctx.pipeline_settings.exclude_noise_speakers_from_transcript = True
+    ctx.pipeline_settings.llm_model = "stub-model"
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
+    ctx.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+        json.dumps({"degraded": False, "noise_speakers": ["SPEAKER_NOISE"]}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_segments_json_path.write_text(
+        json.dumps(
+            [
+                {"speaker": "SPEAKER_REAL", "start": 0.0, "end": 1.0},
+                {"speaker": "SPEAKER_NOISE", "start": 1.0, "end": 1.5},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps(
+            [
+                {
+                    "speaker": "SPEAKER_NOISE",
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "background noise hiss static hum buzz",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    snippets_dir = ctx.artifacts.recording_artifacts.snippets_dir
+    snippets_dir.mkdir(parents=True, exist_ok=True)
+    (snippets_dir.parent / "snippets_manifest.json").write_text(
+        json.dumps({"version": 1, "speakers": {}, "manifest_status": "ok"}),
+        encoding="utf-8",
+    )
+    derived = ctx.artifacts.derived_dir
+    (derived / "language_analysis.json").write_text(
+        json.dumps(
+            {
+                "language": {"detected": "en", "confidence": 0.9},
+                "dominant_language": "en",
+                "language_distribution": {"en": 1.0},
+                "language_spans": [],
+                "segments": [
+                    {
+                        "text": "background noise hiss static hum buzz",
+                        "start": 0.0,
+                        "end": 1.0,
+                    }
+                ],
+                "target_summary_language": "en",
+                "review": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "asr_execution.json").write_text(
+        json.dumps({"used_multilingual_path": False, "selected_mode": "single_language"}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.summary_json_path.write_text(
+        json.dumps({"status": "ok", "summary": "ok"}),
+        encoding="utf-8",
+    )
+
+    result = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
+    assert result.metadata["output_status"] == "no_speech"
+    transcript_payload = json.loads(
+        ctx.artifacts.recording_artifacts.transcript_json_path.read_text(encoding="utf-8")
+    )
+    assert transcript_payload.get("speakers") == []
+    assert transcript_payload.get("text") == ""
+
+
 def test_stage_snippet_export_clears_stale_noise_metadata_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

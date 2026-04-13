@@ -12,7 +12,10 @@ from uuid import uuid4
 
 from lan_transcriber.artifacts import atomic_write_json
 from lan_transcriber.pipeline import Settings as PipelineSettings
-from lan_transcriber.pipeline_steps.noise_detection import apply_noise_flags_to_manifest
+from lan_transcriber.pipeline_steps.noise_detection import (
+    apply_noise_flags_to_manifest,
+    update_diarization_metadata_with_noise,
+)
 from lan_transcriber.pipeline_steps.snippets import (
     SnippetExportRequest,
     export_speaker_snippets,
@@ -675,6 +678,18 @@ def repair_recording_snippets(
         pipeline_settings=pipeline_settings,
     )
     _replace_staged_snippet_outputs(recording_id, staged_root, settings=cfg)
+    if pipeline_settings.noise_detection_enabled:
+        noise_speakers = manifest.get("noise_speakers")
+        if not isinstance(noise_speakers, list):
+            noise_speakers = []
+        update_diarization_metadata_with_noise(
+            _derived_dir(recording_id, settings=cfg) / "diarization_metadata.json",
+            summary={
+                "noise_speakers": list(noise_speakers),
+                "speaker_metrics": {},
+                "threshold": pipeline_settings.noise_speech_ratio_threshold,
+            },
+        )
     metadata = snippet_export_result_metadata(manifest)
     result = SnippetRepairResult(
         recording_id=recording_id,
