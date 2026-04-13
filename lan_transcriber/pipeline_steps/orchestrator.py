@@ -3490,6 +3490,15 @@ async def run_pipeline(
         serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in transcript_speaker_turns]
         speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in transcript_speaker_turns))
         atomic_write_text(artifacts.transcript_txt_path, transcript_text)
+        # When noise exclusion filtered every speaker, drop language_segments
+        # so UI / metrics fallbacks that rebuild turns from transcript.json
+        # ["segments"] don't re-surface excluded noise text.
+        filter_emptied_turns = (
+            bool(speaker_turns) and not transcript_speaker_turns
+        )
+        transcript_payload_segments = (
+            [] if filter_emptied_turns else language_analysis.segments
+        )
         payload = _finalize_transcript_payload(
             _base_transcript_payload(
                 recording_id=artifacts.recording_id,
@@ -3501,7 +3510,7 @@ async def run_pipeline(
                 transcript_language_override=override_lang,
                 calendar_title=cal_title,
                 calendar_attendees=cal_attendees,
-                segments=language_analysis.segments,
+                segments=transcript_payload_segments,
                 speakers=speakers,
                 text=transcript_text,
             ),

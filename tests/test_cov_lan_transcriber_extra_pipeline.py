@@ -3823,6 +3823,15 @@ async def test_run_pipeline_returns_no_speech_when_all_turns_flagged_as_noise(
         )
     )
     assert metrics_payload["status"] == "no_speech"
+    transcript_payload = json.loads(
+        (cfg.recordings_root / "rec-all-noise" / "derived" / "transcript.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    # language_segments are cleared when filter empties every turn so UI
+    # fallbacks can't rebuild noise turns from transcript.json["segments"].
+    assert transcript_payload.get("segments") == []
+    assert transcript_payload.get("speakers") == []
 
 
 @pytest.mark.asyncio

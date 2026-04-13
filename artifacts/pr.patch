@@ -1,160 +1,49 @@
-diff --git a/lan_app/snippet_repair.py b/lan_app/snippet_repair.py
-index 48a0d19..45f3224 100644
---- a/lan_app/snippet_repair.py
-+++ b/lan_app/snippet_repair.py
-@@ -484,7 +484,7 @@ def _build_staged_snippet_outputs(
-     *,
-     settings: AppSettings,
-     pipeline_settings: PipelineSettings,
--) -> tuple[Path, dict[str, Any]]:
-+) -> tuple[Path, dict[str, Any], dict[str, Any] | None]:
-     temp_root = _staged_snippet_output_root(eligibility.recording_id, settings=settings)
-     staged_snippets_dir = temp_root / "snippets"
-     try:
-@@ -504,7 +504,7 @@ def _build_staged_snippet_outputs(
-                     }
-                 ],
-             )
--            return temp_root, manifest
-+            return temp_root, manifest, None
- 
-         export_speaker_snippets(
-             SnippetExportRequest(
-@@ -521,8 +521,9 @@ def _build_staged_snippet_outputs(
-             )
-         )
-         manifest_path = staged_snippets_dir.parent / "snippets_manifest.json"
-+        noise_summary: dict[str, Any] | None = None
-         if pipeline_settings.noise_detection_enabled:
--            apply_noise_flags_to_manifest(
-+            noise_summary = apply_noise_flags_to_manifest(
-                 manifest_path,
-                 snippets_dir=staged_snippets_dir,
-                 threshold=pipeline_settings.noise_speech_ratio_threshold,
-@@ -543,7 +544,7 @@ def _build_staged_snippet_outputs(
-             manifest_status=manifest_status,
-             degraded_diarization=eligibility.degraded_diarization,
-         )
--        return temp_root, manifest
-+        return temp_root, manifest, noise_summary
-     except SnippetRepairError:
-         shutil.rmtree(temp_root, ignore_errors=True)
-         raise
-@@ -672,22 +673,22 @@ def repair_recording_snippets(
-         ),
-         settings=cfg,
-     )
--    staged_root, manifest = _build_staged_snippet_outputs(
-+    staged_root, manifest, noise_summary = _build_staged_snippet_outputs(
-         eligibility,
-         settings=cfg,
-         pipeline_settings=pipeline_settings,
-     )
-     _replace_staged_snippet_outputs(recording_id, staged_root, settings=cfg)
-     if pipeline_settings.noise_detection_enabled:
--        noise_speakers = manifest.get("noise_speakers")
--        if not isinstance(noise_speakers, list):
--            noise_speakers = []
-+        summary_source = noise_summary or {}
-         update_diarization_metadata_with_noise(
-             _derived_dir(recording_id, settings=cfg) / "diarization_metadata.json",
-             summary={
--                "noise_speakers": list(noise_speakers),
--                "speaker_metrics": {},
--                "threshold": pipeline_settings.noise_speech_ratio_threshold,
-+                "noise_speakers": list(summary_source.get("noise_speakers") or []),
-+                "speaker_metrics": dict(summary_source.get("speaker_metrics") or {}),
-+                "threshold": summary_source.get(
-+                    "threshold", pipeline_settings.noise_speech_ratio_threshold
-+                ),
-             },
-         )
-     metadata = snippet_export_result_metadata(manifest)
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index e3cd8a8..1e174d3 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -3562,6 +3562,13 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
-                 for turn in transcript_speaker_turns
-             }
-         )
-+        # When noise exclusion filtered out every turn, drop language_segments
-+        # too so downstream metrics (refresh_recording_metrics) don't re-read
-+        # noise ASR text via the transcript.json["segments"] fallback.
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index bfdabc6..d78e356 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -3490,6 +3490,15 @@ async def run_pipeline(
+         serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in transcript_speaker_turns]
+         speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in transcript_speaker_turns))
+         atomic_write_text(artifacts.transcript_txt_path, transcript_text)
++        # When noise exclusion filtered every speaker, drop language_segments
++        # so UI / metrics fallbacks that rebuild turns from transcript.json
++        # ["segments"] don't re-surface excluded noise text.
 +        filter_emptied_turns = (
-+            bool(ctx.speaker_turns) and not transcript_speaker_turns
++            bool(speaker_turns) and not transcript_speaker_turns
 +        )
-+        no_speech_segments = [] if filter_emptied_turns else language_segments
-         atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, "")
-         atomic_write_json(
-             ctx.artifacts.recording_artifacts.transcript_json_path,
-@@ -3575,7 +3582,7 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
-                 transcript_language_override=ctx.transcript_language_override,
-                 calendar_title=ctx.calendar_title,
-                 calendar_attendees=ctx.calendar_attendees,
--                segments=language_segments,
-+                segments=no_speech_segments,
++        transcript_payload_segments = (
++            [] if filter_emptied_turns else language_analysis.segments
++        )
+         payload = _finalize_transcript_payload(
+             _base_transcript_payload(
+                 recording_id=artifacts.recording_id,
+@@ -3501,7 +3510,7 @@ async def run_pipeline(
+                 transcript_language_override=override_lang,
+                 calendar_title=cal_title,
+                 calendar_attendees=cal_attendees,
+-                segments=language_analysis.segments,
++                segments=transcript_payload_segments,
                  speakers=speakers,
-                 text="",
+                 text=transcript_text,
              ),
-diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
-index b84f334..edc23b8 100644
---- a/tests/test_pipeline_resume_coverage.py
-+++ b/tests/test_pipeline_resume_coverage.py
-@@ -1216,6 +1216,9 @@ def test_stage_export_artifacts_no_speech_speakers_excludes_filtered(
+diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
+index b666424..3e821d4 100644
+--- a/tests/test_cov_lan_transcriber_extra_pipeline.py
++++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
+@@ -3823,6 +3823,15 @@ async def test_run_pipeline_returns_no_speech_when_all_turns_flagged_as_noise(
+         )
      )
-     assert transcript_payload.get("speakers") == []
-     assert transcript_payload.get("text") == ""
-+    # language_segments are dropped so refresh_recording_metrics can't rebuild
-+    # participant metrics from noise text when all turns were filtered.
+     assert metrics_payload["status"] == "no_speech"
++    transcript_payload = json.loads(
++        (cfg.recordings_root / "rec-all-noise" / "derived" / "transcript.json").read_text(
++            encoding="utf-8"
++        )
++    )
++    # language_segments are cleared when filter empties every turn so UI
++    # fallbacks can't rebuild noise turns from transcript.json["segments"].
 +    assert transcript_payload.get("segments") == []
++    assert transcript_payload.get("speakers") == []
  
  
- def test_stage_snippet_export_clears_stale_noise_metadata_on_failure(
-diff --git a/tests/test_snippet_repair.py b/tests/test_snippet_repair.py
-index 6528cf0..8b28b9c 100644
---- a/tests/test_snippet_repair.py
-+++ b/tests/test_snippet_repair.py
-@@ -615,7 +615,7 @@ def test_staged_output_helpers_cover_no_speech_partial_degraded_and_cleanup(
-         diarization_segments=({"speaker": "S1", "start": 0.0, "end": 1.0},),
-         speaker_turns=(),
-     )
--    temp_root, manifest = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
-+    temp_root, manifest, _noise_summary = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
-         empty_eligibility,
-         settings=cfg,
-         pipeline_settings=pipeline_settings,
-@@ -643,7 +643,7 @@ def test_staged_output_helpers_cover_no_speech_partial_degraded_and_cleanup(
- 
-     monkeypatch.setattr(snippet_repair, "export_speaker_snippets", _partial_export)
-     partial_eligibility = snippet_repair.assess_snippet_repair("rec-staged-1", settings=cfg)
--    temp_root, manifest = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
-+    temp_root, manifest, _noise_summary = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
-         partial_eligibility,
-         settings=cfg,
-         pipeline_settings=pipeline_settings,
-@@ -665,7 +665,7 @@ def test_staged_output_helpers_cover_no_speech_partial_degraded_and_cleanup(
-             "degraded_diarization": True,
-         }
-     )
--    temp_root, manifest = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
-+    temp_root, manifest, _noise_summary = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
-         degraded_eligibility,
-         settings=cfg,
-         pipeline_settings=pipeline_settings,
-@@ -809,10 +809,11 @@ def test_repair_recording_snippets_updates_diarization_noise_metadata(
-     )
- 
-     persisted = json.loads(metadata_path.read_text(encoding="utf-8"))
--    # Noise list is re-derived from the manifest after the move, so the
--    # stale STALE_NOISE flag must be gone and replaced with current data
--    # from the manifest (empty list since our fake did not mutate the manifest).
--    assert persisted["noise_speakers"] == []
-+    # The repair flow now forwards the noise summary (speakers + metrics) from
-+    # apply_noise_flags_to_manifest onto diarization_metadata, so stale values
-+    # are wiped and repaired metrics land in the metadata alongside the list.
-+    assert persisted["noise_speakers"] == ["S2"]
-+    assert persisted["noise_speaker_metrics"]["S2"]["flagged"] is True
- 
- 
- def test_repair_recording_snippets_skips_noise_detection_when_disabled(
+ @pytest.mark.asyncio

@@ -59,13 +59,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.11.9-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   14963      0   5018      0   100%
+TOTAL   14965      0   5018      0   100%
 
 66 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1280 passed, 3 skipped, 11 warnings in 114.88s (0:01:54)
+1280 passed, 3 skipped, 11 warnings in 115.89s (0:01:55)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -89,7 +89,7 @@ lan_transcriber/pipeline_steps/diarization_quality.py     318      0    120     
 lan_transcriber/pipeline_steps/language.py                155      0     64      0   100%
 lan_transcriber/pipeline_steps/multilingual_asr.py        239      0     88      0   100%
 lan_transcriber/pipeline_steps/noise_detection.py         131      0     52      0   100%
-lan_transcriber/pipeline_steps/orchestrator.py           1318      0    386      0   100%
+lan_transcriber/pipeline_steps/orchestrator.py           1320      0    386      0   100%
 lan_transcriber/pipeline_steps/precheck.py                116      0     46      0   100%
 lan_transcriber/pipeline_steps/snippets.py                231      0     84      0   100%
 lan_transcriber/pipeline_steps/speaker_merge.py           255      0    122      0   100%
@@ -99,7 +99,7 @@ lan_transcriber/runtime_paths.py                           21      0      4     
 lan_transcriber/torch_safe_globals.py                     126      0     40      0   100%
 lan_transcriber/utils.py                                   50      0     30      0   100%
 -----------------------------------------------------------------------------------------
-TOTAL                                                    4726      0   1640      0   100%
+TOTAL                                                    4728      0   1640      0   100%
 Name                               Stmts   Miss Branch BrPart  Cover
 --------------------------------------------------------------------
 lan_app/__init__.py                    1      0      0      0   100%
