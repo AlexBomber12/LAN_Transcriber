@@ -3338,31 +3338,35 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
             ctx.artifacts.recording_artifacts.diarization_metadata_json_path
         )
         noise_raw = diarization_metadata.get("noise_speakers")
-        if isinstance(noise_raw, list):
-            noise_set = {str(item) for item in noise_raw}
-            if noise_set:
-                filtered_turns = [
-                    turn
-                    for turn in ctx.speaker_turns
-                    if str(turn.get("speaker") or "S1") not in noise_set
-                ]
-                # Adopt the filtered set when the filter actually removed
-                # turns this run OR when a prior run already applied it
-                # (rerun: speaker_turns.json on disk is already filtered).
-                filter_removed = len(filtered_turns) != len(ctx.speaker_turns)
-                filter_already_applied = bool(
-                    diarization_metadata.get("noise_filter_applied")
-                )
-                if filter_removed or filter_already_applied:
-                    summary_speaker_turns = filtered_turns
-                    summary_text = normalizer.dedup(
-                        " ".join(
-                            str(turn.get("text") or "").strip()
-                            for turn in summary_speaker_turns
-                        ).strip()
-                    )
-                    if not summary_speaker_turns or not summary_text:
-                        return _build_skip_result("no_speech")
+        noise_set: set[str] = (
+            {str(item) for item in noise_raw}
+            if isinstance(noise_raw, list)
+            else set()
+        )
+        filter_already_applied = bool(
+            diarization_metadata.get("noise_filter_applied")
+        )
+        filtered_turns = [
+            turn
+            for turn in ctx.speaker_turns
+            if str(turn.get("speaker") or "S1") not in noise_set
+        ]
+        filter_removed = len(filtered_turns) != len(ctx.speaker_turns)
+        # Adopt the filtered set when the filter actually removed turns
+        # this run OR when a prior run already applied it (rerun:
+        # speaker_turns.json on disk is already filtered). The flag is
+        # checked even if noise_speakers was reset by _clear_noise_metadata
+        # so a resume from snippet_export still honors the prior filter.
+        if filter_removed or filter_already_applied:
+            summary_speaker_turns = filtered_turns
+            summary_text = normalizer.dedup(
+                " ".join(
+                    str(turn.get("text") or "").strip()
+                    for turn in summary_speaker_turns
+                ).strip()
+            )
+            if not summary_speaker_turns or not summary_text:
+                return _build_skip_result("no_speech")
     ctx.friendly = pipeline_orchestrator._sentiment_score(summary_text or ctx.clean_text)
     llm_prompt_text = pipeline_orchestrator._speaker_turn_prompt_text(
         summary_speaker_turns,
@@ -3548,39 +3552,44 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
             ctx.artifacts.recording_artifacts.diarization_metadata_json_path
         )
         noise_raw = diarization_metadata.get("noise_speakers")
-        if isinstance(noise_raw, list):
-            noise_set = {str(item) for item in noise_raw}
-            if noise_set:
-                filtered_turns = [
-                    turn
-                    for turn in ctx.speaker_turns
-                    if str(turn.get("speaker") or "S1") not in noise_set
-                ]
-                # Two ways the filter is "active":
-                # - It actually removes turns this run (fresh run).
-                # - A prior run already applied it (rerun: speaker_turns.json
-                #   on disk is already filtered, so removal is a no-op now).
-                # The persisted noise_filter_applied flag distinguishes the
-                # rerun case from harmless stale-label drift.
-                filter_removed = len(filtered_turns) != len(ctx.speaker_turns)
-                filter_already_applied = bool(
-                    diarization_metadata.get("noise_filter_applied")
-                )
-                noise_filter_active = filter_removed or filter_already_applied
-                if noise_filter_active:
-                    transcript_speaker_turns = filtered_turns
-                    transcript_text = normalizer.dedup(
-                        " ".join(
-                            str(turn.get("text") or "").strip()
-                            for turn in transcript_speaker_turns
-                        ).strip()
-                    )
-                if filter_removed and not filter_already_applied:
-                    diarization_metadata["noise_filter_applied"] = True
-                    atomic_write_json(
-                        ctx.artifacts.recording_artifacts.diarization_metadata_json_path,
-                        diarization_metadata,
-                    )
+        noise_set: set[str] = (
+            {str(item) for item in noise_raw}
+            if isinstance(noise_raw, list)
+            else set()
+        )
+        filter_already_applied = bool(
+            diarization_metadata.get("noise_filter_applied")
+        )
+        filtered_turns = [
+            turn
+            for turn in ctx.speaker_turns
+            if str(turn.get("speaker") or "S1") not in noise_set
+        ]
+        filter_removed = len(filtered_turns) != len(ctx.speaker_turns)
+        # The filter is "active" when any of these hold:
+        # - It removes turns this run (fresh run).
+        # - A prior run already applied it (rerun: speaker_turns.json on
+        #   disk is already filtered, so removal is a no-op now). The
+        #   noise_filter_applied flag survives even if a resume cleared
+        #   noise_speakers via _clear_noise_metadata, so we keep filtering
+        #   consistently with the on-disk speaker_turns.json. The flag is
+        #   reset to absent automatically when _stage_speaker_turns rewrites
+        #   diarization_metadata.json with a fresh unfiltered baseline.
+        noise_filter_active = filter_removed or filter_already_applied
+        if noise_filter_active:
+            transcript_speaker_turns = filtered_turns
+            transcript_text = normalizer.dedup(
+                " ".join(
+                    str(turn.get("text") or "").strip()
+                    for turn in transcript_speaker_turns
+                ).strip()
+            )
+        if filter_removed and not filter_already_applied:
+            diarization_metadata["noise_filter_applied"] = True
+            atomic_write_json(
+                ctx.artifacts.recording_artifacts.diarization_metadata_json_path,
+                diarization_metadata,
+            )
     if not transcript_text:
         speakers = sorted(
             {
