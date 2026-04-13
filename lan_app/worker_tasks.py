@@ -3623,6 +3623,14 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
         ],
         ctx.pipeline_settings.merge_similar,
     )
+    # When noise exclusion actually altered the turn list, replace the raw ASR
+    # language_segments with the filtered speaker turns so transcript.json
+    # consumers (UI fallbacks, metrics) can't resurface excluded content.
+    transcript_segments = (
+        list(transcript_speaker_turns)
+        if transcript_speaker_turns is not ctx.speaker_turns
+        else language_segments
+    )
     transcript_payload = pipeline_orchestrator._finalize_transcript_payload(
         pipeline_orchestrator._base_transcript_payload(
             recording_id=ctx.recording_id,
@@ -3634,7 +3642,7 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
             transcript_language_override=ctx.transcript_language_override,
             calendar_title=ctx.calendar_title,
             calendar_attendees=ctx.calendar_attendees,
-            segments=language_segments,
+            segments=transcript_segments,
             speakers=sorted(
                 {
                     aliases.get(str(turn.get("speaker") or "S1"), str(turn.get("speaker") or "S1"))

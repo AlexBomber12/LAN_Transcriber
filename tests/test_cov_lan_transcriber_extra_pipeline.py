@@ -3751,6 +3751,14 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
     assert any(
         str(turn.get("speaker")) == "S1" for turn in captured_prompts["turns"]
     )
+    # transcript.json["segments"] must not carry noise text when the filter
+    # drops a subset of speakers — UI fallbacks rebuild turns from there.
+    assert any(
+        str(seg.get("speaker")) == "S1" for seg in (transcript.get("segments") or [])
+    )
+    assert all(
+        str(seg.get("speaker")) != "S2" for seg in (transcript.get("segments") or [])
+    )
 
 
 @pytest.mark.asyncio

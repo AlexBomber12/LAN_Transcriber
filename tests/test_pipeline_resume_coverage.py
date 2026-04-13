@@ -1537,6 +1537,15 @@ def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
     assert all("SPEAKER_NOISE" not in line for line in speaker_lines)
     assert "SPEAKER_NOISE" not in (transcript_payload.get("speakers") or [])
     assert "SPEAKER_REAL" in (transcript_payload.get("speakers") or [])
+    # Partial-filter case must also scrub transcript.json["segments"] so UI
+    # fallbacks don't rebuild noise turns from raw ASR output.
+    persisted_segments = transcript_payload.get("segments") or []
+    assert any(
+        str(seg.get("speaker")) == "SPEAKER_REAL" for seg in persisted_segments
+    )
+    assert all(
+        str(seg.get("speaker")) != "SPEAKER_NOISE" for seg in persisted_segments
+    )
     persisted_turns = json.loads(
         ctx.artifacts.recording_artifacts.speaker_turns_json_path.read_text(encoding="utf-8")
     )
