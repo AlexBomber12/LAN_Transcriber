@@ -114,6 +114,20 @@ def _eight_bit_tone_wav(path: Path, *, duration_sec: float = 4.0) -> Path:
     return path
 
 
+def _eight_bit_silent_wav(path: Path, *, duration_sec: float = 4.0) -> Path:
+    rate = 16000
+    samples = int(rate * duration_sec)
+    # Unsigned 8-bit silence is centred at 128 (not 0).
+    chunk = bytes([128] * samples)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav_out:
+        wav_out.setnchannels(1)
+        wav_out.setsampwidth(1)
+        wav_out.setframerate(rate)
+        wav_out.writeframes(chunk)
+    return path
+
+
 def test_compute_speech_ratio_scales_threshold_for_8bit_pcm(tmp_path: Path) -> None:
     """Eight-bit PCM tones must read as speech, not noise (RMS caps at ~128)."""
 
@@ -121,6 +135,14 @@ def test_compute_speech_ratio_scales_threshold_for_8bit_pcm(tmp_path: Path) -> N
     ratio = noise_detection.compute_wav_speech_ratio(audio)
     assert ratio is not None
     assert ratio > 0.5
+
+
+def test_compute_speech_ratio_handles_8bit_unsigned_silence(tmp_path: Path) -> None:
+    """Unsigned 8-bit silence (bytes=128) must read as 0 speech, not voiced."""
+
+    audio = _eight_bit_silent_wav(tmp_path / "silent8.wav")
+    ratio = noise_detection.compute_wav_speech_ratio(audio)
+    assert ratio == 0.0
 
 
 def test_rms_threshold_scales_with_sample_width() -> None:

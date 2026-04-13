@@ -34,6 +34,15 @@ def _rms_threshold_for_width(sample_width: int) -> float:
     return max(1.0, full_scale * _RMS_THRESHOLD_FRACTION)
 
 
+def _frame_rms(chunk: bytes, sample_width: int) -> int:
+    if sample_width == 1:
+        # 8-bit PCM WAV stores samples as unsigned bytes centred at 128, but
+        # audioop.rms with width=1 interprets bytes as signed two's-complement.
+        # Shift by -128 first so silence (~128) reads as 0 instead of ~128.
+        chunk = audioop.bias(chunk, 1, -128)
+    return audioop.rms(chunk, sample_width)
+
+
 def compute_wav_speech_ratio(audio_path: Path) -> float | None:
     """Return ratio of voiced frames in ``audio_path`` (PCM WAV).
 
@@ -63,7 +72,7 @@ def compute_wav_speech_ratio(audio_path: Path) -> float | None:
                 if len(chunk) < frame_bytes // 2:
                     break
                 total += 1
-                if audioop.rms(chunk, sample_width) >= threshold:
+                if _frame_rms(chunk, sample_width) >= threshold:
                     voiced += 1
         if total == 0:
             return 0.0

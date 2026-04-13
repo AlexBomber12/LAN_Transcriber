@@ -3520,10 +3520,15 @@ async def run_pipeline(
         atomic_write_json(artifacts.speaker_turns_json_path, transcript_speaker_turns)
         atomic_write_json(artifacts.summary_json_path, summary_payload)
         await _emit_progress(progress_callback, stage="metrics", progress=0.98)
+        metrics_status = (
+            "no_speech"
+            if str(summary_payload.get("status") or "") == "no_speech"
+            else "ok"
+        )
         atomic_write_json(
             artifacts.metrics_json_path,
             {
-                "status": "ok",
+                "status": metrics_status,
                 "version": 1,
                 "precheck": {
                     **precheck_result.__dict__,

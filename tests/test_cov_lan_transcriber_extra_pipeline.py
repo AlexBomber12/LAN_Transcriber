@@ -3817,6 +3817,12 @@ async def test_run_pipeline_returns_no_speech_when_all_turns_flagged_as_noise(
     )
     assert summary_payload["status"] == "no_speech"
     assert result.body == ""
+    metrics_payload = json.loads(
+        (cfg.recordings_root / "rec-all-noise" / "derived" / "metrics.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metrics_payload["status"] == "no_speech"
 
 
 @pytest.mark.asyncio
