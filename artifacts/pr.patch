@@ -1,84 +1,233 @@
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 4e79308..132b0c8 100644
+index 132b0c8..c162e4d 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -3623,13 +3623,14 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
-         ],
-         ctx.pipeline_settings.merge_similar,
-     )
--    # When noise exclusion actually altered the turn list, replace the raw ASR
--    # language_segments with the filtered speaker turns so transcript.json
--    # consumers (UI fallbacks, metrics) can't resurface excluded content.
-+    # When noise exclusion actually removed turns (value-based check, not
-+    # identity: the list is always fresh when noise_set is non-empty even if
-+    # no labels match), replace raw ASR language_segments with the filtered
-+    # speaker turns so transcript.json consumers (UI fallbacks, metrics)
-+    # can't resurface excluded content.
-+    filter_removed_turns = len(transcript_speaker_turns) != len(ctx.speaker_turns)
-     transcript_segments = (
--        list(transcript_speaker_turns)
--        if transcript_speaker_turns is not ctx.speaker_turns
--        else language_segments
-+        list(transcript_speaker_turns) if filter_removed_turns else language_segments
-     )
-     transcript_payload = pipeline_orchestrator._finalize_transcript_payload(
-         pipeline_orchestrator._base_transcript_payload(
+@@ -3341,19 +3341,24 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
+         if isinstance(noise_raw, list):
+             noise_set = {str(item) for item in noise_raw}
+             if noise_set:
+-                summary_speaker_turns = [
++                filtered_turns = [
+                     turn
+                     for turn in ctx.speaker_turns
+                     if str(turn.get("speaker") or "S1") not in noise_set
+                 ]
+-                summary_text = normalizer.dedup(
+-                    " ".join(
+-                        str(turn.get("text") or "").strip()
+-                        for turn in summary_speaker_turns
+-                    ).strip()
+-                )
+-                if not summary_speaker_turns or not summary_text:
+-                    return _build_skip_result("no_speech")
++                # Only swap LLM inputs when at least one turn was actually
++                # removed; stale labels shouldn't force a speaker-turn-derived
++                # prompt when no exclusion has happened.
++                if len(filtered_turns) != len(ctx.speaker_turns):
++                    summary_speaker_turns = filtered_turns
++                    summary_text = normalizer.dedup(
++                        " ".join(
++                            str(turn.get("text") or "").strip()
++                            for turn in summary_speaker_turns
++                        ).strip()
++                    )
++                    if not summary_speaker_turns or not summary_text:
++                        return _build_skip_result("no_speech")
+     ctx.friendly = pipeline_orchestrator._sentiment_score(summary_text or ctx.clean_text)
+     llm_prompt_text = pipeline_orchestrator._speaker_turn_prompt_text(
+         summary_speaker_turns,
+@@ -3541,17 +3546,23 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
+         if isinstance(noise_raw, list):
+             noise_set = {str(item) for item in noise_raw}
+             if noise_set:
+-                transcript_speaker_turns = [
++                filtered_turns = [
+                     turn
+                     for turn in ctx.speaker_turns
+                     if str(turn.get("speaker") or "S1") not in noise_set
+                 ]
+-                transcript_text = normalizer.dedup(
+-                    " ".join(
+-                        str(turn.get("text") or "").strip()
+-                        for turn in transcript_speaker_turns
+-                    ).strip()
+-                )
++                # Only swap the transcript inputs when a real turn was
++                # removed. Stale noise_speakers labels that don't match any
++                # current speaker would otherwise silently replace the ASR
++                # clean_text with a speaker-turn-derived string.
++                if len(filtered_turns) != len(ctx.speaker_turns):
++                    transcript_speaker_turns = filtered_turns
++                    transcript_text = normalizer.dedup(
++                        " ".join(
++                            str(turn.get("text") or "").strip()
++                            for turn in transcript_speaker_turns
++                        ).strip()
++                    )
+     if not transcript_text:
+         speakers = sorted(
+             {
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 9897db9..6c694c8 100644
+index 6c694c8..193b9bf 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -3490,12 +3490,13 @@ async def run_pipeline(
-         serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in transcript_speaker_turns]
-         speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in transcript_speaker_turns))
-         atomic_write_text(artifacts.transcript_txt_path, transcript_text)
--        # When noise exclusion actually altered the turn list (partial or
--        # full), swap the raw ASR language_segments for the filtered speaker
--        # turns so UI / metrics fallbacks that rebuild turns from
--        # transcript.json["segments"] can't re-surface excluded noise text.
--        filter_applied = transcript_speaker_turns is not speaker_turns
--        if filter_applied:
-+        # When noise exclusion actually removed turns (value-based check: the
-+        # filter list is always fresh when noise_speakers is non-empty even if
-+        # no labels match), swap the raw ASR language_segments for the
-+        # filtered speaker turns so UI / metrics fallbacks that rebuild turns
-+        # from transcript.json["segments"] can't re-surface excluded noise.
-+        filter_removed_turns = len(transcript_speaker_turns) != len(speaker_turns)
-+        if filter_removed_turns:
-             transcript_payload_segments = list(transcript_speaker_turns)
-         else:
-             transcript_payload_segments = language_analysis.segments
+@@ -3408,17 +3408,22 @@ async def run_pipeline(
+         transcript_speaker_turns = speaker_turns
+         transcript_text = clean_text
+         if noise_speakers and cfg.exclude_noise_speakers_from_transcript:
+-            transcript_speaker_turns = [
++            filtered_turns = [
+                 turn
+                 for turn in speaker_turns
+                 if str(turn.get("speaker") or "") not in noise_speakers
+             ]
+-            transcript_text = normalizer.dedup(
+-                " ".join(
+-                    str(turn.get("text") or "").strip()
+-                    for turn in transcript_speaker_turns
+-                ).strip()
+-            )
++            # Only adopt the filtered set when at least one turn was
++            # actually removed; stale noise_speakers labels shouldn't
++            # silently swap clean_text for a speaker-turn-derived string.
++            if len(filtered_turns) != len(speaker_turns):
++                transcript_speaker_turns = filtered_turns
++                transcript_text = normalizer.dedup(
++                    " ".join(
++                        str(turn.get("text") or "").strip()
++                        for turn in transcript_speaker_turns
++                    ).strip()
++                )
+         speaker_lines = _merge_similar(
+             [
+                 f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
+diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
+index b6d926d..ed26028 100644
+--- a/tests/test_cov_lan_transcriber_extra_pipeline.py
++++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
+@@ -3761,6 +3761,80 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
+     )
+ 
+ 
++@pytest.mark.asyncio
++async def test_run_pipeline_preserves_inputs_when_noise_labels_stale(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """Stale noise_speakers labels in legacy run_pipeline must not alter outputs."""
++
++    monkeypatch.setattr(
++        pipeline,
++        "_whisperx_asr",
++        lambda *_a, **_k: (
++            [
++                {"start": 0.0, "end": 1.0, "text": "hello team and thanks for joining"},
++            ],
++            {"language": "en", "language_probability": 0.95},
++        ),
++    )
++    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
++    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
++    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
++    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
++    monkeypatch.setattr(
++        pipeline,
++        "apply_noise_flags_to_manifest",
++        lambda *_a, **_k: {
++            "noise_speakers": ["S_GHOST"],
++            "speaker_metrics": {},
++            "threshold": 0.3,
++        },
++    )
++    monkeypatch.setattr(
++        pipeline,
++        "update_diarization_metadata_with_noise",
++        lambda *_a, **_k: None,
++    )
++
++    captured: dict[str, object] = {}
++
++    def _capture_prompts(turns, *args, **kwargs):
++        captured["turns"] = list(turns)
++        return ("sys", "user")
++
++    monkeypatch.setattr(pipeline, "build_structured_summary_prompts", _capture_prompts)
++
++    class _RealDiariser:
++        async def __call__(self, _audio_path: Path):
++            return _annotation_from_segments((0.0, 1.0, "S1"))
++
++    cfg = _settings(tmp_path, exclude_noise_speakers_from_transcript=True)
++    result = await pipeline.run_pipeline(
++        audio_path=_audio_file(tmp_path, "stale-noise.mp3"),
++        cfg=cfg,
++        llm=_FakeLLM(),
++        diariser=_RealDiariser(),
++        recording_id="rec-stale-noise",
++        precheck=pipeline.PrecheckResult(
++            duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None
++        ),
++    )
++    # Noise label references a speaker that isn't in this run's turns, so the
++    # filter is a no-op and original inputs flow through unchanged.
++    assert result.summary.strip() == "- ok"
++    assert any(str(turn.get("speaker")) == "S1" for turn in captured["turns"])
++    transcript = json.loads(
++        (cfg.recordings_root / "rec-stale-noise" / "derived" / "transcript.json").read_text(
++            encoding="utf-8"
++        )
++    )
++    # Raw ASR segments preserved (no swap) since the filter removed nothing.
++    assert transcript.get("text") == result.body
++    assert all(
++        "text" in seg for seg in (transcript.get("segments") or [])
++    )
++
++
+ @pytest.mark.asyncio
+ async def test_run_pipeline_returns_no_speech_when_all_turns_flagged_as_noise(
+     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
-index d2c4bcd..bb6db3f 100644
+index bb6db3f..261f25a 100644
 --- a/tests/test_pipeline_resume_coverage.py
 +++ b/tests/test_pipeline_resume_coverage.py
-@@ -1443,6 +1443,92 @@ def test_stage_export_artifacts_skips_filter_when_noise_detection_disabled(
-     assert any(str(turn.get("speaker")) == "SPEAKER_NOISE" for turn in persisted_turns)
+@@ -1527,6 +1527,12 @@ def test_stage_export_artifacts_preserves_segments_when_noise_labels_stale(
+     # raw ASR output (language metadata preserved) rather than speaker turns.
+     segments = transcript_payload.get("segments") or []
+     assert any(seg.get("language") == "en" for seg in segments)
++    # transcript.txt must also remain the ASR-derived clean_text, not a
++    # speaker-turn-derived recomputation.
++    transcript_txt = ctx.artifacts.recording_artifacts.transcript_txt_path.read_text(
++        encoding="utf-8"
++    )
++    assert transcript_txt == ctx.clean_text
  
  
-+def test_stage_export_artifacts_preserves_segments_when_noise_labels_stale(
-+    tmp_path: Path,
+ def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
+@@ -2052,6 +2058,93 @@ def test_stage_llm_extract_returns_no_speech_when_filter_drops_all_turns(
+     assert result.metadata["skip_reason"] == "no_speech"
+ 
+ 
++def test_stage_llm_extract_preserves_inputs_when_noise_labels_stale(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 +) -> None:
-+    """Stale noise_speakers that don't match current turns must not swap segments."""
++    """Stale noise_speakers that don't match any turn must not swap LLM inputs."""
 +
-+    cfg, ctx = _new_ctx(
-+        tmp_path, "rec-export-stale-labels", create_raw_audio=True
-+    )
++    _cfg_value, ctx = _new_ctx(tmp_path, "rec-llm-stale")
 +    ctx.pipeline_settings.exclude_noise_speakers_from_transcript = True
-+    ctx.pipeline_settings.llm_model = "stub-model"
 +    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
-+    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
-+    ctx.artifacts.audio_sanitize_json_path.write_text(
-+        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
-+        encoding="utf-8",
-+    )
-+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
++    ctx.artifacts.language_analysis_json_path.write_text(
 +        json.dumps(
-+            {"degraded": False, "noise_speakers": ["SPEAKER_GHOST"]}
++            {
++                "segments": [
++                    {
++                        "start": 0.0,
++                        "end": 1.0,
++                        "text": "hello team this is the real speaker speaking now",
++                    }
++                ],
++                "target_summary_language": "en",
++            }
 +        ),
-+        encoding="utf-8",
-+    )
-+    ctx.artifacts.diarization_segments_json_path.write_text(
-+        json.dumps([{"speaker": "SPEAKER_REAL", "start": 0.0, "end": 1.0}]),
 +        encoding="utf-8",
 +    )
 +    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
@@ -94,53 +243,57 @@ index d2c4bcd..bb6db3f 100644
 +        ),
 +        encoding="utf-8",
 +    )
-+    snippets_dir = ctx.artifacts.recording_artifacts.snippets_dir
-+    snippets_dir.mkdir(parents=True, exist_ok=True)
-+    (snippets_dir.parent / "snippets_manifest.json").write_text(
-+        json.dumps({"version": 1, "speakers": {}, "manifest_status": "ok"}),
-+        encoding="utf-8",
-+    )
-+    derived = ctx.artifacts.derived_dir
-+    raw_segment = {
-+        "text": "hello team this is the real speaker speaking now",
-+        "start": 0.0,
-+        "end": 1.0,
-+        "language": "en",
-+    }
-+    (derived / "language_analysis.json").write_text(
-+        json.dumps(
-+            {
-+                "language": {"detected": "en", "confidence": 0.9},
-+                "dominant_language": "en",
-+                "language_distribution": {"en": 1.0},
-+                "language_spans": [],
-+                "segments": [raw_segment],
-+                "target_summary_language": "en",
-+                "review": {},
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
-+    (derived / "asr_execution.json").write_text(
-+        json.dumps({"used_multilingual_path": False, "selected_mode": "single_language"}),
-+        encoding="utf-8",
-+    )
-+    ctx.artifacts.recording_artifacts.summary_json_path.write_text(
-+        json.dumps({"status": "ok", "summary": "ok"}),
++    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
++        json.dumps({"degraded": False, "noise_speakers": ["SPEAKER_GHOST"]}),
 +        encoding="utf-8",
 +    )
 +
-+    result = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
++    captured: dict[str, object] = {}
++
++    def _capture_prompts(turns, summary_lang, *, calendar_title=None, calendar_attendees=None):
++        captured["turns"] = list(turns)
++        return ("sys", "user")
++
++    monkeypatch.setattr(
++        worker_tasks.pipeline_orchestrator, "_require_llm_model", lambda _m: "test-model"
++    )
++    monkeypatch.setattr(worker_tasks, "LLMClient", lambda: object())
++    monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _p: {})
++    monkeypatch.setattr(
++        worker_tasks.pipeline_orchestrator, "_sentiment_score", lambda _t: 3
++    )
++    monkeypatch.setattr(
++        worker_tasks.pipeline_orchestrator, "_use_chunked_llm", lambda *_a, **_k: False
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "_load_calendar_summary_context",
++        lambda *_a, **_k: ("Weekly Sync", []),
++    )
++    monkeypatch.setattr(worker_tasks, "build_structured_summary_prompts", _capture_prompts)
++
++    async def _fake_generate(*_a, **_k):
++        return {"content": json.dumps({"topic": "ok", "summary_bullets": ["x"]})}
++
++    monkeypatch.setattr(
++        worker_tasks.pipeline_orchestrator, "_generate_llm_message", _fake_generate
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "build_summary_payload",
++        lambda **_k: {"status": "ok", "topic": "ok"},
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "_set_recording_progress_best_effort",
++        lambda *_a, **_k: None,
++    )
++
++    result = worker_tasks._stage_llm_extract(ctx)  # noqa: SLF001
 +    assert result.status == "completed"
-+    transcript_payload = json.loads(
-+        ctx.artifacts.recording_artifacts.transcript_json_path.read_text(encoding="utf-8")
-+    )
-+    # Stale noise label doesn't match any real speaker, so segments stay as
-+    # raw ASR output (language metadata preserved) rather than speaker turns.
-+    segments = transcript_payload.get("segments") or []
-+    assert any(seg.get("language") == "en" for seg in segments)
++    assert captured["turns"] == ctx.speaker_turns
 +
 +
- def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
-     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
- ) -> None:
+ @pytest.mark.parametrize("noise_payload", [None, []])
+ def test_stage_llm_extract_skips_filter_when_noise_metadata_unusable(
+     tmp_path: Path,

@@ -3341,19 +3341,24 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
         if isinstance(noise_raw, list):
             noise_set = {str(item) for item in noise_raw}
             if noise_set:
-                summary_speaker_turns = [
+                filtered_turns = [
                     turn
                     for turn in ctx.speaker_turns
                     if str(turn.get("speaker") or "S1") not in noise_set
                 ]
-                summary_text = normalizer.dedup(
-                    " ".join(
-                        str(turn.get("text") or "").strip()
-                        for turn in summary_speaker_turns
-                    ).strip()
-                )
-                if not summary_speaker_turns or not summary_text:
-                    return _build_skip_result("no_speech")
+                # Only swap LLM inputs when at least one turn was actually
+                # removed; stale labels shouldn't force a speaker-turn-derived
+                # prompt when no exclusion has happened.
+                if len(filtered_turns) != len(ctx.speaker_turns):
+                    summary_speaker_turns = filtered_turns
+                    summary_text = normalizer.dedup(
+                        " ".join(
+                            str(turn.get("text") or "").strip()
+                            for turn in summary_speaker_turns
+                        ).strip()
+                    )
+                    if not summary_speaker_turns or not summary_text:
+                        return _build_skip_result("no_speech")
     ctx.friendly = pipeline_orchestrator._sentiment_score(summary_text or ctx.clean_text)
     llm_prompt_text = pipeline_orchestrator._speaker_turn_prompt_text(
         summary_speaker_turns,
@@ -3541,17 +3546,23 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
         if isinstance(noise_raw, list):
             noise_set = {str(item) for item in noise_raw}
             if noise_set:
-                transcript_speaker_turns = [
+                filtered_turns = [
                     turn
                     for turn in ctx.speaker_turns
                     if str(turn.get("speaker") or "S1") not in noise_set
                 ]
-                transcript_text = normalizer.dedup(
-                    " ".join(
-                        str(turn.get("text") or "").strip()
-                        for turn in transcript_speaker_turns
-                    ).strip()
-                )
+                # Only swap the transcript inputs when a real turn was
+                # removed. Stale noise_speakers labels that don't match any
+                # current speaker would otherwise silently replace the ASR
+                # clean_text with a speaker-turn-derived string.
+                if len(filtered_turns) != len(ctx.speaker_turns):
+                    transcript_speaker_turns = filtered_turns
+                    transcript_text = normalizer.dedup(
+                        " ".join(
+                            str(turn.get("text") or "").strip()
+                            for turn in transcript_speaker_turns
+                        ).strip()
+                    )
     if not transcript_text:
         speakers = sorted(
             {

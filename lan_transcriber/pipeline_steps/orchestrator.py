@@ -3408,17 +3408,22 @@ async def run_pipeline(
         transcript_speaker_turns = speaker_turns
         transcript_text = clean_text
         if noise_speakers and cfg.exclude_noise_speakers_from_transcript:
-            transcript_speaker_turns = [
+            filtered_turns = [
                 turn
                 for turn in speaker_turns
                 if str(turn.get("speaker") or "") not in noise_speakers
             ]
-            transcript_text = normalizer.dedup(
-                " ".join(
-                    str(turn.get("text") or "").strip()
-                    for turn in transcript_speaker_turns
-                ).strip()
-            )
+            # Only adopt the filtered set when at least one turn was
+            # actually removed; stale noise_speakers labels shouldn't
+            # silently swap clean_text for a speaker-turn-derived string.
+            if len(filtered_turns) != len(speaker_turns):
+                transcript_speaker_turns = filtered_turns
+                transcript_text = normalizer.dedup(
+                    " ".join(
+                        str(turn.get("text") or "").strip()
+                        for turn in transcript_speaker_turns
+                    ).strip()
+                )
         speaker_lines = _merge_similar(
             [
                 f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
