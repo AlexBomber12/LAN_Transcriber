@@ -615,7 +615,7 @@ def test_staged_output_helpers_cover_no_speech_partial_degraded_and_cleanup(
         diarization_segments=({"speaker": "S1", "start": 0.0, "end": 1.0},),
         speaker_turns=(),
     )
-    temp_root, manifest = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
+    temp_root, manifest, _noise_summary = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
         empty_eligibility,
         settings=cfg,
         pipeline_settings=pipeline_settings,
@@ -643,7 +643,7 @@ def test_staged_output_helpers_cover_no_speech_partial_degraded_and_cleanup(
 
     monkeypatch.setattr(snippet_repair, "export_speaker_snippets", _partial_export)
     partial_eligibility = snippet_repair.assess_snippet_repair("rec-staged-1", settings=cfg)
-    temp_root, manifest = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
+    temp_root, manifest, _noise_summary = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
         partial_eligibility,
         settings=cfg,
         pipeline_settings=pipeline_settings,
@@ -665,7 +665,7 @@ def test_staged_output_helpers_cover_no_speech_partial_degraded_and_cleanup(
             "degraded_diarization": True,
         }
     )
-    temp_root, manifest = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
+    temp_root, manifest, _noise_summary = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
         degraded_eligibility,
         settings=cfg,
         pipeline_settings=pipeline_settings,
@@ -765,6 +765,104 @@ def test_replace_staged_outputs_failure_without_existing_targets(
         )
 
     assert not (cfg.recordings_root / "rec-rollback-empty-1" / "derived" / "snippets").exists()
+
+
+def test_repair_recording_snippets_updates_diarization_noise_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Noise detection on repair must also refresh diarization_metadata.json."""
+
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-repair-noise-meta",
+        source="upload",
+        source_filename="repair-noise-meta.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_repair_artifacts(cfg, "rec-repair-noise-meta")
+    metadata_path = (
+        cfg.recordings_root
+        / "rec-repair-noise-meta"
+        / "derived"
+        / "diarization_metadata.json"
+    )
+    metadata_path.write_text(
+        json.dumps({"degraded": False, "noise_speakers": ["STALE_NOISE"]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        snippet_repair,
+        "apply_noise_flags_to_manifest",
+        lambda manifest_path, *, snippets_dir, threshold: {
+            "noise_speakers": ["S2"],
+            "speaker_metrics": {"S2": {"flagged": True}},
+            "threshold": threshold,
+        },
+    )
+
+    snippet_repair.repair_recording_snippets(
+        "rec-repair-noise-meta",
+        settings=cfg,
+        origin="pytest",
+    )
+
+    persisted = json.loads(metadata_path.read_text(encoding="utf-8"))
+    # The repair flow now forwards the noise summary (speakers + metrics) from
+    # apply_noise_flags_to_manifest onto diarization_metadata, so stale values
+    # are wiped and repaired metrics land in the metadata alongside the list.
+    assert persisted["noise_speakers"] == ["S2"]
+    assert persisted["noise_speaker_metrics"]["S2"]["flagged"] is True
+
+
+def test_repair_recording_snippets_skips_noise_detection_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-repair-no-noise",
+        source="upload",
+        source_filename="repair-no-noise.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_repair_artifacts(cfg, "rec-repair-no-noise")
+    # Disabling noise detection on the AppSettings override (rather than via
+    # process env) must propagate into PipelineSettings inside repair_recording_snippets.
+    cfg.noise_detection_enabled = False
+    monkeypatch.setattr(
+        snippet_repair,
+        "apply_noise_flags_to_manifest",
+        lambda *_a, **_k: pytest.fail("noise detection should be disabled"),
+    )
+
+    # Seed stale noise_speakers in diarization_metadata to simulate a prior
+    # detection-enabled run; the disabled repair must clear them so resumes
+    # don't continue applying old noise labels.
+    metadata_path = (
+        cfg.recordings_root / "rec-repair-no-noise" / "derived" / "diarization_metadata.json"
+    )
+    metadata_path.write_text(
+        json.dumps({"degraded": False, "noise_speakers": ["STALE"]}),
+        encoding="utf-8",
+    )
+
+    snippet_repair.repair_recording_snippets(
+        "rec-repair-no-noise",
+        settings=cfg,
+        origin="pytest",
+    )
+    manifest = json.loads(
+        (cfg.recordings_root / "rec-repair-no-noise" / "derived" / "snippets_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "noise_speakers" not in manifest
+    persisted_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert persisted_metadata["noise_speakers"] == []
+    assert persisted_metadata["noise_speaker_metrics"] == {}
 
 
 def test_repair_recording_snippets_is_idempotent(tmp_path: Path) -> None:

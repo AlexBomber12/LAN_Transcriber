@@ -3620,6 +3620,303 @@ async def test_run_pipeline_tolerates_session_transcriber_cleanup_before_restore
 
 
 @pytest.mark.asyncio
+async def test_run_pipeline_skips_noise_detection_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        pipeline,
+        "_whisperx_asr",
+        lambda *_a, **_k: (
+            [{"start": 0.0, "end": 1.0, "text": "hello team and thanks for joining"}],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        pipeline,
+        "apply_noise_flags_to_manifest",
+        lambda *_a, **_k: pytest.fail("noise detection should be disabled"),
+    )
+
+    cfg = _settings(tmp_path, noise_detection_enabled=False)
+    result = await pipeline.run_pipeline(
+        audio_path=_audio_file(tmp_path, "no-noise-detection.mp3"),
+        cfg=cfg,
+        llm=_FakeLLM(),
+        diariser=_NoTracksDiariser(),
+        recording_id="rec-no-noise-detection",
+        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
+    )
+    assert result.summary.strip() == "- ok"
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_filters_noise_speakers_from_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        pipeline,
+        "_whisperx_asr",
+        lambda *_a, **_k: (
+            [
+                {"start": 0.0, "end": 1.0, "text": "hello team and thanks for joining"},
+                {"start": 1.0, "end": 2.0, "text": "background noise hiss static hum"},
+            ],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        pipeline,
+        "apply_noise_flags_to_manifest",
+        lambda *_a, **_k: {
+            "noise_speakers": ["S2"],
+            "speaker_metrics": {"S2": {"flagged": True}},
+            "threshold": 0.3,
+        },
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "update_diarization_metadata_with_noise",
+        lambda *_a, **_k: None,
+    )
+
+    captured_prompts: dict[str, Any] = {}
+
+    def _capture_prompts(turns, summary_lang, *, calendar_title=None, calendar_attendees=None):
+        captured_prompts["turns"] = list(turns)
+        return ("sys-prompt", "user-prompt")
+
+    monkeypatch.setattr(pipeline, "build_structured_summary_prompts", _capture_prompts)
+
+    class _NoiseDiariser:
+        async def __call__(self, _audio_path: Path):
+            return _annotation_from_segments(
+                (0.0, 1.0, "S1"),
+                (1.0, 2.0, "S2"),
+            )
+
+    cfg = _settings(tmp_path, exclude_noise_speakers_from_transcript=True)
+    result = await pipeline.run_pipeline(
+        audio_path=_audio_file(tmp_path, "filter-noise.mp3"),
+        cfg=cfg,
+        llm=_FakeLLM(),
+        diariser=_NoiseDiariser(),
+        recording_id="rec-noise-filter",
+        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
+    )
+    assert result.summary.strip() == "- ok"
+    transcript = json.loads(
+        (cfg.recordings_root / "rec-noise-filter" / "derived" / "transcript.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    speaker_lines = transcript.get("speaker_lines") or []
+    assert any("S1" in line for line in speaker_lines)
+    assert all("S2" not in line for line in speaker_lines)
+    assert "S1" in (transcript.get("speakers") or [])
+    assert "S2" not in (transcript.get("speakers") or [])
+    persisted_turns = json.loads(
+        (cfg.recordings_root / "rec-noise-filter" / "derived" / "speaker_turns.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert all(str(turn.get("speaker")) != "S2" for turn in persisted_turns)
+    assert any(str(turn.get("speaker")) == "S1" for turn in persisted_turns)
+    assert all(seg.speaker != "S2" for seg in result.segments)
+    assert any(seg.speaker == "S1" for seg in result.segments)
+    metrics_payload = json.loads(
+        (cfg.recordings_root / "rec-noise-filter" / "derived" / "metrics.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metrics_payload["speaker_turns"] == len(persisted_turns)
+    transcript_txt = (
+        cfg.recordings_root / "rec-noise-filter" / "derived" / "transcript.txt"
+    ).read_text(encoding="utf-8")
+    assert "background noise hiss" not in transcript_txt
+    assert "hello team and thanks" in transcript_txt
+    assert transcript["text"] == transcript_txt
+    assert result.body == transcript_txt
+    assert captured_prompts["turns"], "LLM prompt builder must be called"
+    assert all(
+        str(turn.get("speaker")) != "S2" for turn in captured_prompts["turns"]
+    )
+    assert any(
+        str(turn.get("speaker")) == "S1" for turn in captured_prompts["turns"]
+    )
+    # transcript.json["segments"] must not carry noise text when the filter
+    # drops a subset of speakers — UI fallbacks rebuild turns from there.
+    assert any(
+        str(seg.get("speaker")) == "S1" for seg in (transcript.get("segments") or [])
+    )
+    assert all(
+        str(seg.get("speaker")) != "S2" for seg in (transcript.get("segments") or [])
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_preserves_inputs_when_noise_labels_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stale noise_speakers labels in legacy run_pipeline must not alter outputs."""
+
+    monkeypatch.setattr(
+        pipeline,
+        "_whisperx_asr",
+        lambda *_a, **_k: (
+            [
+                {"start": 0.0, "end": 1.0, "text": "hello team and thanks for joining"},
+            ],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        pipeline,
+        "apply_noise_flags_to_manifest",
+        lambda *_a, **_k: {
+            "noise_speakers": ["S_GHOST"],
+            "speaker_metrics": {},
+            "threshold": 0.3,
+        },
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "update_diarization_metadata_with_noise",
+        lambda *_a, **_k: None,
+    )
+
+    captured: dict[str, object] = {}
+
+    def _capture_prompts(turns, *args, **kwargs):
+        captured["turns"] = list(turns)
+        return ("sys", "user")
+
+    monkeypatch.setattr(pipeline, "build_structured_summary_prompts", _capture_prompts)
+
+    class _RealDiariser:
+        async def __call__(self, _audio_path: Path):
+            return _annotation_from_segments((0.0, 1.0, "S1"))
+
+    cfg = _settings(tmp_path, exclude_noise_speakers_from_transcript=True)
+    result = await pipeline.run_pipeline(
+        audio_path=_audio_file(tmp_path, "stale-noise.mp3"),
+        cfg=cfg,
+        llm=_FakeLLM(),
+        diariser=_RealDiariser(),
+        recording_id="rec-stale-noise",
+        precheck=pipeline.PrecheckResult(
+            duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None
+        ),
+    )
+    # Noise label references a speaker that isn't in this run's turns, so the
+    # filter is a no-op and original inputs flow through unchanged.
+    assert result.summary.strip() == "- ok"
+    assert any(str(turn.get("speaker")) == "S1" for turn in captured["turns"])
+    transcript = json.loads(
+        (cfg.recordings_root / "rec-stale-noise" / "derived" / "transcript.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    # Raw ASR segments preserved (no swap) since the filter removed nothing.
+    assert transcript.get("text") == result.body
+    assert all(
+        "text" in seg for seg in (transcript.get("segments") or [])
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_returns_no_speech_when_all_turns_flagged_as_noise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If exclusion filters every speaker, skip LLM and emit no_speech summary."""
+
+    monkeypatch.setattr(
+        pipeline,
+        "_whisperx_asr",
+        lambda *_a, **_k: (
+            [{"start": 0.0, "end": 1.0, "text": "background noise hiss static hum buzz"}],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        pipeline,
+        "apply_noise_flags_to_manifest",
+        lambda *_a, **_k: {
+            "noise_speakers": ["S1"],
+            "speaker_metrics": {"S1": {"flagged": True}},
+            "threshold": 0.3,
+        },
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "update_diarization_metadata_with_noise",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_sentiment_score",
+        lambda _t: pytest.fail("Sentiment must not run when all turns filtered"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "build_structured_summary_prompts",
+        lambda *_a, **_k: pytest.fail("LLM must not run when all turns filtered"),
+    )
+
+    class _SingleSpeakerDiariser:
+        async def __call__(self, _audio_path: Path):
+            return _annotation_from_segments((0.0, 1.0, "S1"))
+
+    cfg = _settings(tmp_path, exclude_noise_speakers_from_transcript=True)
+    result = await pipeline.run_pipeline(
+        audio_path=_audio_file(tmp_path, "all-noise.mp3"),
+        cfg=cfg,
+        llm=_FakeLLM(),
+        diariser=_SingleSpeakerDiariser(),
+        recording_id="rec-all-noise",
+        precheck=pipeline.PrecheckResult(
+            duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None
+        ),
+    )
+    summary_payload = json.loads(
+        (cfg.recordings_root / "rec-all-noise" / "derived" / "summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary_payload["status"] == "no_speech"
+    assert result.body == ""
+    metrics_payload = json.loads(
+        (cfg.recordings_root / "rec-all-noise" / "derived" / "metrics.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metrics_payload["status"] == "no_speech"
+    transcript_payload = json.loads(
+        (cfg.recordings_root / "rec-all-noise" / "derived" / "transcript.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    # language_segments are cleared when filter empties every turn so UI
+    # fallbacks can't rebuild noise turns from transcript.json["segments"].
+    assert transcript_payload.get("segments") == []
+    assert transcript_payload.get("speakers") == []
+
+
+@pytest.mark.asyncio
 async def test_run_pipeline_fails_fast_when_llm_model_is_blank(tmp_path: Path) -> None:
     cfg = _settings(tmp_path, llm_model="   ")
     with pytest.raises(RuntimeError, match="LLM_MODEL is required"):

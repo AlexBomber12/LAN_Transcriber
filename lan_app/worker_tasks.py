@@ -54,6 +54,10 @@ from lan_transcriber.pipeline_steps.language import (
 )
 from lan_transcriber.pipeline_steps.multilingual_asr import run_language_aware_asr
 from lan_transcriber.pipeline_steps import summary_builder as pipeline_summary_builder
+from lan_transcriber.pipeline_steps.noise_detection import (
+    apply_noise_flags_to_manifest,
+    update_diarization_metadata_with_noise,
+)
 from lan_transcriber.pipeline_steps.snippets import (
     SnippetExportRequest,
     export_speaker_snippets,
@@ -1896,6 +1900,9 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
         speaker_turn_short_merge_gap_sec=settings.speaker_turn_short_merge_gap_sec,
         speaker_turn_min_words=settings.speaker_turn_min_words,
         vad_method=settings.vad_method,
+        noise_detection_enabled=settings.noise_detection_enabled,
+        noise_speech_ratio_threshold=settings.noise_speech_ratio_threshold,
+        exclude_noise_speakers_from_transcript=settings.exclude_noise_speakers_from_transcript,
     )
 
 
@@ -3099,11 +3106,29 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
     )
 
 
+def _empty_noise_summary(ctx: _PipelineExecutionContext) -> dict[str, Any]:
+    return {
+        "noise_speakers": [],
+        "speaker_metrics": {},
+        "threshold": ctx.pipeline_settings.noise_speech_ratio_threshold,
+    }
+
+
+def _clear_noise_metadata(ctx: _PipelineExecutionContext) -> None:
+    """Reset noise_speakers in diarization_metadata so stale data from a prior
+    snippet-export run cannot bleed into a new attempt's transcript filter."""
+    update_diarization_metadata_with_noise(
+        ctx.artifacts.recording_artifacts.diarization_metadata_json_path,
+        summary=_empty_noise_summary(ctx),
+    )
+
+
 def _stage_snippet_export(ctx: _PipelineExecutionContext) -> _StageResult:
     precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
     ctx.precheck_result = precheck_result
     if precheck_result is None:
         raise RuntimeError("Missing precheck artifact")
+    _clear_noise_metadata(ctx)
     if precheck_result.quarantine_reason:
         manifest = _write_empty_snippet_manifest(
             ctx,
@@ -3232,6 +3257,16 @@ def _stage_snippet_export(ctx: _PipelineExecutionContext) -> _StageResult:
         return _StageResult(status="completed", metadata=metadata)
 
     manifest_path = _snippets_manifest_path(ctx)
+    if ctx.pipeline_settings.noise_detection_enabled:
+        noise_summary = apply_noise_flags_to_manifest(
+            manifest_path,
+            snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
+            threshold=ctx.pipeline_settings.noise_speech_ratio_threshold,
+        )
+        update_diarization_metadata_with_noise(
+            ctx.artifacts.recording_artifacts.diarization_metadata_json_path,
+            summary=noise_summary,
+        )
     manifest = _load_json_dict(manifest_path)
     counts = _snippet_manifest_counts(manifest)
     manifest_status = "ok"
@@ -3245,6 +3280,10 @@ def _stage_snippet_export(ctx: _PipelineExecutionContext) -> _StageResult:
         degraded_diarization=degraded_diarization,
     )
     metadata = _snippet_export_result_metadata(manifest)
+    if ctx.pipeline_settings.noise_detection_enabled:
+        noise_speakers = manifest.get("noise_speakers")
+        if isinstance(noise_speakers, list):
+            metadata["noise_speakers"] = list(noise_speakers)
     _append_step_log(
         ctx.log_path,
         (
@@ -3289,9 +3328,48 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
         or "en"
     )
     aliases = load_speaker_aliases(ctx.pipeline_settings.speaker_db)
-    ctx.friendly = pipeline_orchestrator._sentiment_score(ctx.clean_text)
+    summary_speaker_turns = ctx.speaker_turns
+    summary_text = ctx.clean_text
+    if (
+        ctx.pipeline_settings.noise_detection_enabled
+        and ctx.pipeline_settings.exclude_noise_speakers_from_transcript
+    ):
+        diarization_metadata = _load_json_dict(
+            ctx.artifacts.recording_artifacts.diarization_metadata_json_path
+        )
+        noise_raw = diarization_metadata.get("noise_speakers")
+        noise_set: set[str] = (
+            {str(item) for item in noise_raw}
+            if isinstance(noise_raw, list)
+            else set()
+        )
+        filter_already_applied = bool(
+            diarization_metadata.get("noise_filter_applied")
+        )
+        filtered_turns = [
+            turn
+            for turn in ctx.speaker_turns
+            if str(turn.get("speaker") or "S1") not in noise_set
+        ]
+        filter_removed = len(filtered_turns) != len(ctx.speaker_turns)
+        # Adopt the filtered set when the filter actually removed turns
+        # this run OR when a prior run already applied it (rerun:
+        # speaker_turns.json on disk is already filtered). The flag is
+        # checked even if noise_speakers was reset by _clear_noise_metadata
+        # so a resume from snippet_export still honors the prior filter.
+        if filter_removed or filter_already_applied:
+            summary_speaker_turns = filtered_turns
+            summary_text = normalizer.dedup(
+                " ".join(
+                    str(turn.get("text") or "").strip()
+                    for turn in summary_speaker_turns
+                ).strip()
+            )
+            if not summary_speaker_turns or not summary_text:
+                return _build_skip_result("no_speech")
+    ctx.friendly = pipeline_orchestrator._sentiment_score(summary_text or ctx.clean_text)
     llm_prompt_text = pipeline_orchestrator._speaker_turn_prompt_text(
-        ctx.speaker_turns,
+        summary_speaker_turns,
         aliases=aliases,
     )
     cancel_aware_llm = _CancelAwareLLMClient(
@@ -3313,8 +3391,8 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
     if pipeline_orchestrator._use_chunked_llm(llm_prompt_text, ctx.pipeline_settings):
         ctx.summary_payload = asyncio.run(
             pipeline_orchestrator._run_chunked_llm_summary(
-                transcript_text=llm_prompt_text or ctx.clean_text,
-                speaker_turns=ctx.speaker_turns,
+                transcript_text=llm_prompt_text or summary_text,
+                speaker_turns=summary_speaker_turns,
                 aliases=aliases,
                 derived_dir=ctx.artifacts.derived_dir,
                 llm=cancel_aware_llm,
@@ -3340,7 +3418,7 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
         )
     else:
         sys_prompt, user_prompt = build_structured_summary_prompts(
-            ctx.speaker_turns,
+            summary_speaker_turns,
             summary_lang,
             calendar_title=ctx.calendar_title,
             calendar_attendees=ctx.calendar_attendees,
@@ -3463,12 +3541,77 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
     ctx.clean_text = normalizer.dedup(
         " ".join(str(seg.get("text") or "").strip() for seg in language_segments).strip()
     )
-    if not ctx.clean_text:
+    transcript_speaker_turns = ctx.speaker_turns
+    transcript_text = ctx.clean_text
+    noise_filter_active = False
+    if (
+        ctx.pipeline_settings.noise_detection_enabled
+        and ctx.pipeline_settings.exclude_noise_speakers_from_transcript
+    ):
+        diarization_metadata = _load_json_dict(
+            ctx.artifacts.recording_artifacts.diarization_metadata_json_path
+        )
+        noise_raw = diarization_metadata.get("noise_speakers")
+        noise_set: set[str] = (
+            {str(item) for item in noise_raw}
+            if isinstance(noise_raw, list)
+            else set()
+        )
+        filter_already_applied = bool(
+            diarization_metadata.get("noise_filter_applied")
+        )
+        filtered_turns = [
+            turn
+            for turn in ctx.speaker_turns
+            if str(turn.get("speaker") or "S1") not in noise_set
+        ]
+        filter_removed = len(filtered_turns) != len(ctx.speaker_turns)
+        # The filter is "active" when any of these hold:
+        # - It removes turns this run (fresh run).
+        # - A prior run already applied it (rerun: speaker_turns.json on
+        #   disk is already filtered, so removal is a no-op now). The
+        #   noise_filter_applied flag survives even if a resume cleared
+        #   noise_speakers via _clear_noise_metadata, so we keep filtering
+        #   consistently with the on-disk speaker_turns.json. The flag is
+        #   reset to absent automatically when _stage_speaker_turns rewrites
+        #   diarization_metadata.json with a fresh unfiltered baseline.
+        noise_filter_active = filter_removed or filter_already_applied
+        if noise_filter_active:
+            transcript_speaker_turns = filtered_turns
+            transcript_text = normalizer.dedup(
+                " ".join(
+                    str(turn.get("text") or "").strip()
+                    for turn in transcript_speaker_turns
+                ).strip()
+            )
+        if filter_removed and not filter_already_applied:
+            diarization_metadata["noise_filter_applied"] = True
+            atomic_write_json(
+                ctx.artifacts.recording_artifacts.diarization_metadata_json_path,
+                diarization_metadata,
+            )
+    if not transcript_text:
         speakers = sorted(
             {
-                aliases.get(str(row.get("speaker") or "S1"), str(row.get("speaker") or "S1"))
-                for row in ctx.diarization_segments
+                aliases.get(
+                    str(turn.get("speaker") or "S1"),
+                    str(turn.get("speaker") or "S1"),
+                )
+                for turn in transcript_speaker_turns
             }
+        )
+        # When noise exclusion is active (fresh removal or persisted from a
+        # prior run that already emptied speaker_turns.json) drop
+        # language_segments too so downstream metrics
+        # (refresh_recording_metrics) don't re-read noise ASR text via the
+        # transcript.json["segments"] fallback.
+        filter_emptied_turns = (
+            bool(ctx.speaker_turns) and not transcript_speaker_turns
+        )
+        no_speech_segments = (
+            []
+            if filter_emptied_turns or noise_filter_active
+            else language_segments
         )
         atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, "")
         atomic_write_json(
@@ -3483,13 +3626,16 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
                 transcript_language_override=ctx.transcript_language_override,
                 calendar_title=ctx.calendar_title,
                 calendar_attendees=ctx.calendar_attendees,
-                segments=language_segments,
+                segments=no_speech_segments,
                 speakers=speakers,
                 text="",
             ),
         )
         atomic_write_json(ctx.artifacts.recording_artifacts.segments_json_path, ctx.diarization_segments)
-        atomic_write_json(ctx.artifacts.recording_artifacts.speaker_turns_json_path, ctx.speaker_turns)
+        atomic_write_json(
+            ctx.artifacts.recording_artifacts.speaker_turns_json_path,
+            transcript_speaker_turns,
+        )
         atomic_write_json(
             ctx.artifacts.recording_artifacts.summary_json_path,
             pipeline_summary_builder._build_structured_summary_payload(
@@ -3517,9 +3663,16 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
     speaker_lines = pipeline_orchestrator._merge_similar(
         [
             f"[{safe_float(turn.get('start')):.2f}-{safe_float(turn.get('end')):.2f}] **{aliases.get(str(turn.get('speaker') or 'S1'), str(turn.get('speaker') or 'S1'))}:** {str(turn.get('text') or '').strip()}"
-            for turn in ctx.speaker_turns
+            for turn in transcript_speaker_turns
         ],
         ctx.pipeline_settings.merge_similar,
+    )
+    # When the noise filter is active (fresh removal or persisted-from-prior-run),
+    # swap raw ASR language_segments for the filtered speaker turns so
+    # transcript.json consumers (UI fallbacks, metrics) can't resurface
+    # excluded content.
+    transcript_segments = (
+        list(transcript_speaker_turns) if noise_filter_active else language_segments
     )
     transcript_payload = pipeline_orchestrator._finalize_transcript_payload(
         pipeline_orchestrator._base_transcript_payload(
@@ -3532,23 +3685,25 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
             transcript_language_override=ctx.transcript_language_override,
             calendar_title=ctx.calendar_title,
             calendar_attendees=ctx.calendar_attendees,
-            segments=language_segments,
+            segments=transcript_segments,
             speakers=sorted(
                 {
                     aliases.get(str(turn.get("speaker") or "S1"), str(turn.get("speaker") or "S1"))
-                    for turn in ctx.speaker_turns
+                    for turn in transcript_speaker_turns
                 }
             ),
-            text=ctx.clean_text,
+            text=transcript_text,
         ),
         speaker_lines=speaker_lines,
         asr_execution=ctx.asr_execution,
         review=ctx.language_payload.get("review") or {},
     )
-    atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, ctx.clean_text)
+    atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, transcript_text)
     atomic_write_json(ctx.artifacts.recording_artifacts.transcript_json_path, transcript_payload)
     atomic_write_json(ctx.artifacts.recording_artifacts.segments_json_path, ctx.diarization_segments)
-    atomic_write_json(ctx.artifacts.recording_artifacts.speaker_turns_json_path, ctx.speaker_turns)
+    atomic_write_json(
+        ctx.artifacts.recording_artifacts.speaker_turns_json_path, transcript_speaker_turns
+    )
     atomic_write_json(ctx.artifacts.recording_artifacts.summary_json_path, ctx.summary_payload)
     return _StageResult(
         status="completed",

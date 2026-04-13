@@ -12,6 +12,10 @@ from uuid import uuid4
 
 from lan_transcriber.artifacts import atomic_write_json
 from lan_transcriber.pipeline import Settings as PipelineSettings
+from lan_transcriber.pipeline_steps.noise_detection import (
+    apply_noise_flags_to_manifest,
+    update_diarization_metadata_with_noise,
+)
 from lan_transcriber.pipeline_steps.snippets import (
     SnippetExportRequest,
     export_speaker_snippets,
@@ -480,7 +484,7 @@ def _build_staged_snippet_outputs(
     *,
     settings: AppSettings,
     pipeline_settings: PipelineSettings,
-) -> tuple[Path, dict[str, Any]]:
+) -> tuple[Path, dict[str, Any], dict[str, Any] | None]:
     temp_root = _staged_snippet_output_root(eligibility.recording_id, settings=settings)
     staged_snippets_dir = temp_root / "snippets"
     try:
@@ -500,7 +504,7 @@ def _build_staged_snippet_outputs(
                     }
                 ],
             )
-            return temp_root, manifest
+            return temp_root, manifest, None
 
         export_speaker_snippets(
             SnippetExportRequest(
@@ -517,6 +521,13 @@ def _build_staged_snippet_outputs(
             )
         )
         manifest_path = staged_snippets_dir.parent / "snippets_manifest.json"
+        noise_summary: dict[str, Any] | None = None
+        if pipeline_settings.noise_detection_enabled:
+            noise_summary = apply_noise_flags_to_manifest(
+                manifest_path,
+                snippets_dir=staged_snippets_dir,
+                threshold=pipeline_settings.noise_speech_ratio_threshold,
+            )
         manifest = _load_json_dict(manifest_path)
         counts = snippet_manifest_counts(manifest)
         manifest_status = "ok"
@@ -533,7 +544,7 @@ def _build_staged_snippet_outputs(
             manifest_status=manifest_status,
             degraded_diarization=eligibility.degraded_diarization,
         )
-        return temp_root, manifest
+        return temp_root, manifest, noise_summary
     except SnippetRepairError:
         shutil.rmtree(temp_root, ignore_errors=True)
         raise
@@ -644,7 +655,15 @@ def repair_recording_snippets(
             str(eligibility.reason_text or "Snippet regeneration is unavailable."),
         )
 
-    pipeline_settings = PipelineSettings()
+    # Honor caller-supplied AppSettings overrides (especially the noise-detection
+    # knobs) so callers that disable detection or change the threshold via
+    # `settings=` actually see that take effect during repair, rather than
+    # silently reading process env vars via PipelineSettings().
+    pipeline_settings = PipelineSettings(
+        noise_detection_enabled=cfg.noise_detection_enabled,
+        noise_speech_ratio_threshold=cfg.noise_speech_ratio_threshold,
+        exclude_noise_speakers_from_transcript=cfg.exclude_noise_speakers_from_transcript,
+    )
     _LOG.info(
         "snippet repair start recording_id=%s origin=%s audio_source=%s artifact_state=%s",
         recording_id,
@@ -662,12 +681,28 @@ def repair_recording_snippets(
         ),
         settings=cfg,
     )
-    staged_root, manifest = _build_staged_snippet_outputs(
+    staged_root, manifest, noise_summary = _build_staged_snippet_outputs(
         eligibility,
         settings=cfg,
         pipeline_settings=pipeline_settings,
     )
     _replace_staged_snippet_outputs(recording_id, staged_root, settings=cfg)
+    summary_source = noise_summary or {}
+    # Always refresh diarization_metadata noise fields so a repair leaves them
+    # consistent with the repaired manifest. When detection is disabled we
+    # write an explicit empty summary to wipe stale noise_speakers/metrics that
+    # would otherwise persist from a prior detection-enabled run and bleed
+    # into transcript-export filtering on resume paths.
+    update_diarization_metadata_with_noise(
+        _derived_dir(recording_id, settings=cfg) / "diarization_metadata.json",
+        summary={
+            "noise_speakers": list(summary_source.get("noise_speakers") or []),
+            "speaker_metrics": dict(summary_source.get("speaker_metrics") or {}),
+            "threshold": summary_source.get(
+                "threshold", pipeline_settings.noise_speech_ratio_threshold
+            ),
+        },
+    )
     metadata = snippet_export_result_metadata(manifest)
     result = SnippetRepairResult(
         recording_id=recording_id,

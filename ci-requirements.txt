@@ -64,11 +64,11 @@ pluggy==1.6.0
     # via pytest
 prometheus-client==0.25.0
     # via -r ci-requirements.in
-pydantic==2.12.5
+pydantic==2.13.0
     # via
     #   fastapi
     #   pydantic-settings
-pydantic-core==2.41.5
+pydantic-core==2.46.0
     # via pydantic
 pydantic-settings==2.10.1
     # via -r ci-requirements.in

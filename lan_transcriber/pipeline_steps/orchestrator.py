@@ -76,6 +76,11 @@ from .diarization_quality import (
     filter_flickering_speakers,
     smooth_speaker_turns,
 )
+from .noise_detection import (
+    DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD,
+    apply_noise_flags_to_manifest,
+    update_diarization_metadata_with_noise,
+)
 from .snippets import SnippetExportRequest, export_speaker_snippets, write_empty_snippets_manifest
 from .speaker_merge import (
     DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
@@ -511,6 +516,32 @@ class Settings(BaseSettings):
             "speaker_merge_overlap_ratio_threshold",
             "SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD",
             "LAN_SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD",
+        ),
+    )
+    noise_detection_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "noise_detection_enabled",
+            "NOISE_DETECTION_ENABLED",
+            "LAN_NOISE_DETECTION_ENABLED",
+        ),
+    )
+    noise_speech_ratio_threshold: float = Field(
+        default=DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices(
+            "noise_speech_ratio_threshold",
+            "NOISE_SPEECH_RATIO_THRESHOLD",
+            "LAN_NOISE_SPEECH_RATIO_THRESHOLD",
+        ),
+    )
+    exclude_noise_speakers_from_transcript: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "exclude_noise_speakers_from_transcript",
+            "EXCLUDE_NOISE_SPEAKERS_FROM_TRANSCRIPT",
+            "LAN_EXCLUDE_NOISE_SPEAKERS_FROM_TRANSCRIPT",
         ),
     )
 
@@ -3362,60 +3393,118 @@ async def run_pipeline(
                 max_snippets_per_speaker=cfg.snippet_max_per_speaker,
             )
         )
+        noise_speakers: list[str] = []
+        if cfg.noise_detection_enabled:
+            noise_summary = apply_noise_flags_to_manifest(
+                artifacts.snippets_dir.parent / "snippets_manifest.json",
+                snippets_dir=artifacts.snippets_dir,
+                threshold=cfg.noise_speech_ratio_threshold,
+            )
+            update_diarization_metadata_with_noise(
+                artifacts.diarization_metadata_json_path,
+                summary=noise_summary,
+            )
+            noise_speakers = list(noise_summary.get("noise_speakers") or [])
+        transcript_speaker_turns = speaker_turns
+        transcript_text = clean_text
+        if noise_speakers and cfg.exclude_noise_speakers_from_transcript:
+            filtered_turns = [
+                turn
+                for turn in speaker_turns
+                if str(turn.get("speaker") or "") not in noise_speakers
+            ]
+            # Only adopt the filtered set when at least one turn was
+            # actually removed; stale noise_speakers labels shouldn't
+            # silently swap clean_text for a speaker-turn-derived string.
+            if len(filtered_turns) != len(speaker_turns):
+                transcript_speaker_turns = filtered_turns
+                transcript_text = normalizer.dedup(
+                    " ".join(
+                        str(turn.get("text") or "").strip()
+                        for turn in transcript_speaker_turns
+                    ).strip()
+                )
         speaker_lines = _merge_similar(
             [
                 f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
-                for turn in speaker_turns
+                for turn in transcript_speaker_turns
             ],
             cfg.merge_similar,
         )
-        friendly = _sentiment_score(clean_text)
-        llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
-        if _use_chunked_llm(llm_prompt_text, cfg):
-            summary_payload = await _run_chunked_llm_summary(
-                transcript_text=llm_prompt_text or clean_text,
-                speaker_turns=speaker_turns,
-                aliases=aliases,
-                derived_dir=artifacts.summary_json_path.parent,
-                llm=llm,
-                cfg=cfg,
-                llm_model=llm_model,
+        if not transcript_speaker_turns or not transcript_text:
+            # Every turn was flagged as noise; produce a no_speech-style
+            # summary instead of running the LLM on an empty transcript.
+            friendly = 0
+            summary_payload = _build_structured_summary_payload(
+                model=llm_model,
                 target_summary_language=summary_lang,
                 friendly=friendly,
-                default_topic=cal_title or "Meeting summary",
-                calendar_title=cal_title,
-                calendar_attendees=cal_attendees,
-                progress_callback=progress_callback,
-                step_log_callback=step_log_callback,
+                topic="No speech detected",
+                summary_bullets=["No speech detected."],
+                decisions=[],
+                action_items=[],
+                emotional_summary="No emotional summary available.",
+                questions=_empty_questions(),
+                status="no_speech",
             )
         else:
-            sys_prompt, user_prompt = build_structured_summary_prompts(
-                speaker_turns,
-                summary_lang,
-                calendar_title=cal_title,
-                calendar_attendees=cal_attendees,
-            )
-            await _emit_progress(progress_callback, stage="llm", progress=0.90)
-            msg = await _generate_llm_message(
-                llm,
-                system_prompt=sys_prompt,
-                user_prompt=user_prompt,
-                model=llm_model,
-                response_format={"type": "json_object"},
-                max_tokens=cfg.llm_max_tokens,
-                max_tokens_retry=cfg.llm_max_tokens_retry,
-            )
-            summary_payload = build_summary_payload(
-                raw_llm_content=str(msg.get("content") or ""),
-                model=llm_model,
-                target_summary_language=summary_lang,
-                friendly=friendly,
-                default_topic=cal_title or "Meeting summary",
-                derived_dir=artifacts.summary_json_path.parent,
-            )
-        serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in speaker_turns]
-        speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in speaker_turns))
-        atomic_write_text(artifacts.transcript_txt_path, clean_text)
+            friendly = _sentiment_score(transcript_text)
+            llm_prompt_text = _speaker_turn_prompt_text(transcript_speaker_turns, aliases=aliases)
+            if _use_chunked_llm(llm_prompt_text, cfg):
+                summary_payload = await _run_chunked_llm_summary(
+                    transcript_text=llm_prompt_text or transcript_text,
+                    speaker_turns=transcript_speaker_turns,
+                    aliases=aliases,
+                    derived_dir=artifacts.summary_json_path.parent,
+                    llm=llm,
+                    cfg=cfg,
+                    llm_model=llm_model,
+                    target_summary_language=summary_lang,
+                    friendly=friendly,
+                    default_topic=cal_title or "Meeting summary",
+                    calendar_title=cal_title,
+                    calendar_attendees=cal_attendees,
+                    progress_callback=progress_callback,
+                    step_log_callback=step_log_callback,
+                )
+            else:
+                sys_prompt, user_prompt = build_structured_summary_prompts(
+                    transcript_speaker_turns,
+                    summary_lang,
+                    calendar_title=cal_title,
+                    calendar_attendees=cal_attendees,
+                )
+                await _emit_progress(progress_callback, stage="llm", progress=0.90)
+                msg = await _generate_llm_message(
+                    llm,
+                    system_prompt=sys_prompt,
+                    user_prompt=user_prompt,
+                    model=llm_model,
+                    response_format={"type": "json_object"},
+                    max_tokens=cfg.llm_max_tokens,
+                    max_tokens_retry=cfg.llm_max_tokens_retry,
+                )
+                summary_payload = build_summary_payload(
+                    raw_llm_content=str(msg.get("content") or ""),
+                    model=llm_model,
+                    target_summary_language=summary_lang,
+                    friendly=friendly,
+                    default_topic=cal_title or "Meeting summary",
+                    derived_dir=artifacts.summary_json_path.parent,
+                )
+        serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in transcript_speaker_turns]
+        speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in transcript_speaker_turns))
+        atomic_write_text(artifacts.transcript_txt_path, transcript_text)
+        # When noise exclusion actually removed turns (value-based check: the
+        # filter list is always fresh when noise_speakers is non-empty even if
+        # no labels match), swap the raw ASR language_segments for the
+        # filtered speaker turns so UI / metrics fallbacks that rebuild turns
+        # from transcript.json["segments"] can't re-surface excluded noise.
+        filter_removed_turns = len(transcript_speaker_turns) != len(speaker_turns)
+        if filter_removed_turns:
+            transcript_payload_segments = list(transcript_speaker_turns)
+        else:
+            transcript_payload_segments = language_analysis.segments
         payload = _finalize_transcript_payload(
             _base_transcript_payload(
                 recording_id=artifacts.recording_id,
@@ -3427,9 +3516,9 @@ async def run_pipeline(
                 transcript_language_override=override_lang,
                 calendar_title=cal_title,
                 calendar_attendees=cal_attendees,
-                segments=language_analysis.segments,
+                segments=transcript_payload_segments,
                 speakers=speakers,
-                text=clean_text,
+                text=transcript_text,
             ),
             speaker_lines=speaker_lines,
             asr_execution=asr_execution,
@@ -3443,13 +3532,18 @@ async def run_pipeline(
         )
         atomic_write_json(artifacts.transcript_json_path, payload)
         atomic_write_json(artifacts.segments_json_path, diar_segments)
-        atomic_write_json(artifacts.speaker_turns_json_path, speaker_turns)
+        atomic_write_json(artifacts.speaker_turns_json_path, transcript_speaker_turns)
         atomic_write_json(artifacts.summary_json_path, summary_payload)
         await _emit_progress(progress_callback, stage="metrics", progress=0.98)
+        metrics_status = (
+            "no_speech"
+            if str(summary_payload.get("status") or "") == "no_speech"
+            else "ok"
+        )
         atomic_write_json(
             artifacts.metrics_json_path,
             {
-                "status": "ok",
+                "status": metrics_status,
                 "version": 1,
                 "precheck": {
                     **precheck_result.__dict__,
@@ -3458,7 +3552,7 @@ async def run_pipeline(
                 "language": language_info,
                 "asr_segments": len(language_analysis.segments),
                 "diar_segments": len(diar_segments),
-                "speaker_turns": len(speaker_turns),
+                "speaker_turns": len(transcript_speaker_turns),
                 "snippets": len(snippet_paths),
                 "multilingual_asr": {
                     "used_multilingual_path": bool(
@@ -3469,7 +3563,7 @@ async def run_pipeline(
                 "review_required": bool(language_analysis.review_required),
             },
         )
-        return TranscriptResult(summary=str(summary_payload.get("summary") or ""), body=clean_text, friendly=friendly, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=snippet_paths, segments=serialised_segments)
+        return TranscriptResult(summary=str(summary_payload.get("summary") or ""), body=transcript_text, friendly=friendly, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=snippet_paths, segments=serialised_segments)
     except Exception as exc:
         error_rate_total.inc()
         atomic_write_json(
