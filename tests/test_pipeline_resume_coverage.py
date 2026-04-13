@@ -1806,6 +1806,67 @@ def test_stage_llm_extract_filters_noise_speakers_from_summary_inputs(
     )
 
 
+def test_stage_llm_extract_returns_no_speech_when_filter_drops_all_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If exclusion filters every speaker, skip LLM and report no_speech."""
+
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-llm-all-noise")
+    ctx.pipeline_settings.exclude_noise_speakers_from_transcript = True
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx.artifacts.language_analysis_json_path.write_text(
+        json.dumps(
+            {
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 1.0,
+                        "text": "background noise hiss static hum buzz",
+                    }
+                ],
+                "target_summary_language": "en",
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps(
+            [
+                {
+                    "speaker": "SPEAKER_NOISE",
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "background noise hiss static hum buzz",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+        json.dumps({"degraded": False, "noise_speakers": ["SPEAKER_NOISE"]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator, "_require_llm_model", lambda _m: "test-model"
+    )
+    monkeypatch.setattr(worker_tasks, "LLMClient", lambda: object())
+    monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _p: {})
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_calendar_summary_context",
+        lambda *_a, **_k: ("Weekly Sync", []),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "build_structured_summary_prompts",
+        lambda *_a, **_k: pytest.fail("LLM should not be invoked when all turns filtered"),
+    )
+
+    result = worker_tasks._stage_llm_extract(ctx)  # noqa: SLF001
+    assert result.status == "skipped"
+    assert result.metadata["skip_reason"] == "no_speech"
+
+
 @pytest.mark.parametrize("noise_payload", [None, []])
 def test_stage_llm_extract_skips_filter_when_noise_metadata_unusable(
     tmp_path: Path,

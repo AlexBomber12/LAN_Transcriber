@@ -13,14 +13,14 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 45%]
 ........................................................................ [ 50%]
 ........................................................................ [ 56%]
-........................................................................ [ 62%]
+........................................................................ [ 61%]
 ........................................................................ [ 67%]
-.......................................................s................ [ 73%]
-........................................................................ [ 79%]
+............................................................s........... [ 73%]
+........................................................................ [ 78%]
 ........................................................................ [ 84%]
 ........................................................................ [ 90%]
-........................................................................ [ 96%]
-.................................................                        [100%]
+........................................................................ [ 95%]
+......................................................                   [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -59,13 +59,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.11.9-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   14934      0   5000      0   100%
+TOTAL   14952      0   5014      0   100%
 
 66 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1272 passed, 3 skipped, 11 warnings in 117.84s (0:01:57)
+1277 passed, 3 skipped, 11 warnings in 112.35s (0:01:52)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -88,8 +88,8 @@ lan_transcriber/pipeline_steps/artifacts.py                19      0      0     
 lan_transcriber/pipeline_steps/diarization_quality.py     318      0    120      0   100%
 lan_transcriber/pipeline_steps/language.py                155      0     64      0   100%
 lan_transcriber/pipeline_steps/multilingual_asr.py        239      0     88      0   100%
-lan_transcriber/pipeline_steps/noise_detection.py         114      0     40      0   100%
-lan_transcriber/pipeline_steps/orchestrator.py           1314      0    384      0   100%
+lan_transcriber/pipeline_steps/noise_detection.py         127      0     50      0   100%
+lan_transcriber/pipeline_steps/orchestrator.py           1317      0    386      0   100%
 lan_transcriber/pipeline_steps/precheck.py                116      0     46      0   100%
 lan_transcriber/pipeline_steps/snippets.py                231      0     84      0   100%
 lan_transcriber/pipeline_steps/speaker_merge.py           255      0    122      0   100%
@@ -99,7 +99,7 @@ lan_transcriber/runtime_paths.py                           21      0      4     
 lan_transcriber/torch_safe_globals.py                     126      0     40      0   100%
 lan_transcriber/utils.py                                   50      0     30      0   100%
 -----------------------------------------------------------------------------------------
-TOTAL                                                    4705      0   1626      0   100%
+TOTAL                                                    4721      0   1638      0   100%
 Name                               Stmts   Miss Branch BrPart  Cover
 --------------------------------------------------------------------
 lan_app/__init__.py                    1      0      0      0   100%
@@ -136,7 +136,7 @@ lan_app/ui_routes.py                2683      0   1020      0   100%
 lan_app/uploads.py                    79      0     14      0   100%
 lan_app/worker.py                     31      0      2      0   100%
 lan_app/worker_status.py              58      0      6      0   100%
-lan_app/worker_tasks.py             1767      0    516      0   100%
+lan_app/worker_tasks.py             1769      0    518      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                              10229      0   3374      0   100%
+TOTAL                              10231      0   3376      0   100%

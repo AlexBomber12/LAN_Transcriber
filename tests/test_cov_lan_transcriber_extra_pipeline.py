@@ -3754,6 +3754,72 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
 
 
 @pytest.mark.asyncio
+async def test_run_pipeline_returns_no_speech_when_all_turns_flagged_as_noise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If exclusion filters every speaker, skip LLM and emit no_speech summary."""
+
+    monkeypatch.setattr(
+        pipeline,
+        "_whisperx_asr",
+        lambda *_a, **_k: (
+            [{"start": 0.0, "end": 1.0, "text": "background noise hiss static hum buzz"}],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        pipeline,
+        "apply_noise_flags_to_manifest",
+        lambda *_a, **_k: {
+            "noise_speakers": ["S1"],
+            "speaker_metrics": {"S1": {"flagged": True}},
+            "threshold": 0.3,
+        },
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "update_diarization_metadata_with_noise",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_sentiment_score",
+        lambda _t: pytest.fail("Sentiment must not run when all turns filtered"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "build_structured_summary_prompts",
+        lambda *_a, **_k: pytest.fail("LLM must not run when all turns filtered"),
+    )
+
+    class _SingleSpeakerDiariser:
+        async def __call__(self, _audio_path: Path):
+            return _annotation_from_segments((0.0, 1.0, "S1"))
+
+    cfg = _settings(tmp_path, exclude_noise_speakers_from_transcript=True)
+    result = await pipeline.run_pipeline(
+        audio_path=_audio_file(tmp_path, "all-noise.mp3"),
+        cfg=cfg,
+        llm=_FakeLLM(),
+        diariser=_SingleSpeakerDiariser(),
+        recording_id="rec-all-noise",
+        precheck=pipeline.PrecheckResult(
+            duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None
+        ),
+    )
+    summary_payload = json.loads(
+        (cfg.recordings_root / "rec-all-noise" / "derived" / "summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary_payload["status"] == "no_speech"
+    assert result.body == ""
+
+
+@pytest.mark.asyncio
 async def test_run_pipeline_fails_fast_when_llm_model_is_blank(tmp_path: Path) -> None:
     cfg = _settings(tmp_path, llm_model="   ")
     with pytest.raises(RuntimeError, match="LLM_MODEL is required"):

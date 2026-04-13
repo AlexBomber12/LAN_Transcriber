@@ -21,8 +21,17 @@ from lan_transcriber.artifacts import atomic_write_json
 
 DEFAULT_NOISE_SPEECH_RATIO_THRESHOLD = 0.3
 
-_RMS_THRESHOLD = 350
+# Threshold expressed as a fraction of full-scale so it scales cleanly across
+# bit depths. Calibrated against the upstream precheck: 350 / 32768 at 16-bit.
+_RMS_THRESHOLD_FRACTION = 350.0 / 32768.0
 _FRAME_SECONDS = 0.03
+
+
+def _rms_threshold_for_width(sample_width: int) -> float:
+    if sample_width <= 0:
+        return 1.0
+    full_scale = float(1 << (8 * sample_width - 1))
+    return max(1.0, full_scale * _RMS_THRESHOLD_FRACTION)
 
 
 def compute_wav_speech_ratio(audio_path: Path) -> float | None:
@@ -30,6 +39,8 @@ def compute_wav_speech_ratio(audio_path: Path) -> float | None:
 
     Uses the same RMS-based 30 ms windowing as the upstream precheck so that
     silence/noise-only snippets and real speech are evaluated consistently.
+    The voiced threshold scales with ``sample_width`` so 8-bit/24-bit PCM
+    snippets are not mis-classified as noise (audioop.rms is bit-depth scaled).
     Returns ``None`` for unreadable inputs and ``0.0`` for empty WAVs.
     """
 
@@ -42,6 +53,7 @@ def compute_wav_speech_ratio(audio_path: Path) -> float | None:
             sample_width = src.getsampwidth()
             frame_samples = max(int(rate * _FRAME_SECONDS), 1)
             frame_bytes = frame_samples * channels * sample_width
+            threshold = _rms_threshold_for_width(sample_width)
             voiced = 0
             total = 0
             while True:
@@ -51,7 +63,7 @@ def compute_wav_speech_ratio(audio_path: Path) -> float | None:
                 if len(chunk) < frame_bytes // 2:
                     break
                 total += 1
-                if audioop.rms(chunk, sample_width) >= _RMS_THRESHOLD:
+                if audioop.rms(chunk, sample_width) >= threshold:
                     voiced += 1
         if total == 0:
             return 0.0
@@ -125,6 +137,17 @@ def analyze_snippet_noise(
         manifest["noise_speakers"] = []
         manifest["noise_speech_ratio_threshold"] = summary["threshold"]
         return summary
+    # Clear stale per-entry annotations from a prior analysis so re-runs
+    # (different threshold, refreshed snippets, etc.) cannot leave behind
+    # noise_suspected/speech_ratio values that disagree with this run's
+    # noise_speakers summary.
+    for entries in speakers_payload.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, dict):
+                entry.pop("noise_suspected", None)
+                entry.pop("speech_ratio", None)
     noise_speakers: list[str] = []
     metrics: dict[str, Any] = {}
     for speaker_label in sorted(speakers_payload):

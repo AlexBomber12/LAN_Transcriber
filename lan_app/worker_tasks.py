@@ -3352,6 +3352,8 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
                         for turn in summary_speaker_turns
                     ).strip()
                 )
+                if not summary_speaker_turns or not summary_text:
+                    return _build_skip_result("no_speech")
     ctx.friendly = pipeline_orchestrator._sentiment_score(summary_text or ctx.clean_text)
     llm_prompt_text = pipeline_orchestrator._speaker_turn_prompt_text(
         summary_speaker_turns,
@@ -3526,7 +3528,31 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
     ctx.clean_text = normalizer.dedup(
         " ".join(str(seg.get("text") or "").strip() for seg in language_segments).strip()
     )
-    if not ctx.clean_text:
+    transcript_speaker_turns = ctx.speaker_turns
+    transcript_text = ctx.clean_text
+    if (
+        ctx.pipeline_settings.noise_detection_enabled
+        and ctx.pipeline_settings.exclude_noise_speakers_from_transcript
+    ):
+        diarization_metadata = _load_json_dict(
+            ctx.artifacts.recording_artifacts.diarization_metadata_json_path
+        )
+        noise_raw = diarization_metadata.get("noise_speakers")
+        if isinstance(noise_raw, list):
+            noise_set = {str(item) for item in noise_raw}
+            if noise_set:
+                transcript_speaker_turns = [
+                    turn
+                    for turn in ctx.speaker_turns
+                    if str(turn.get("speaker") or "S1") not in noise_set
+                ]
+                transcript_text = normalizer.dedup(
+                    " ".join(
+                        str(turn.get("text") or "").strip()
+                        for turn in transcript_speaker_turns
+                    ).strip()
+                )
+    if not transcript_text:
         speakers = sorted(
             {
                 aliases.get(str(row.get("speaker") or "S1"), str(row.get("speaker") or "S1"))
@@ -3552,7 +3578,10 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
             ),
         )
         atomic_write_json(ctx.artifacts.recording_artifacts.segments_json_path, ctx.diarization_segments)
-        atomic_write_json(ctx.artifacts.recording_artifacts.speaker_turns_json_path, ctx.speaker_turns)
+        atomic_write_json(
+            ctx.artifacts.recording_artifacts.speaker_turns_json_path,
+            transcript_speaker_turns,
+        )
         atomic_write_json(
             ctx.artifacts.recording_artifacts.summary_json_path,
             pipeline_summary_builder._build_structured_summary_payload(
@@ -3577,30 +3606,6 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
         )
 
     ctx.summary_payload = _load_summary_payload(ctx)
-    transcript_speaker_turns = ctx.speaker_turns
-    transcript_text = ctx.clean_text
-    if (
-        ctx.pipeline_settings.noise_detection_enabled
-        and ctx.pipeline_settings.exclude_noise_speakers_from_transcript
-    ):
-        diarization_metadata = _load_json_dict(
-            ctx.artifacts.recording_artifacts.diarization_metadata_json_path
-        )
-        noise_raw = diarization_metadata.get("noise_speakers")
-        if isinstance(noise_raw, list):
-            noise_set = {str(item) for item in noise_raw}
-            if noise_set:
-                transcript_speaker_turns = [
-                    turn
-                    for turn in ctx.speaker_turns
-                    if str(turn.get("speaker") or "S1") not in noise_set
-                ]
-                transcript_text = normalizer.dedup(
-                    " ".join(
-                        str(turn.get("text") or "").strip()
-                        for turn in transcript_speaker_turns
-                    ).strip()
-                )
     speaker_lines = pipeline_orchestrator._merge_similar(
         [
             f"[{safe_float(turn.get('start')):.2f}-{safe_float(turn.get('end')):.2f}] **{aliases.get(str(turn.get('speaker') or 'S1'), str(turn.get('speaker') or 'S1'))}:** {str(turn.get('text') or '').strip()}"

@@ -3426,50 +3426,67 @@ async def run_pipeline(
             ],
             cfg.merge_similar,
         )
-        friendly = _sentiment_score(transcript_text)
-        llm_prompt_text = _speaker_turn_prompt_text(transcript_speaker_turns, aliases=aliases)
-        if _use_chunked_llm(llm_prompt_text, cfg):
-            summary_payload = await _run_chunked_llm_summary(
-                transcript_text=llm_prompt_text or transcript_text,
-                speaker_turns=transcript_speaker_turns,
-                aliases=aliases,
-                derived_dir=artifacts.summary_json_path.parent,
-                llm=llm,
-                cfg=cfg,
-                llm_model=llm_model,
+        if not transcript_speaker_turns or not transcript_text:
+            # Every turn was flagged as noise; produce a no_speech-style
+            # summary instead of running the LLM on an empty transcript.
+            friendly = 0
+            summary_payload = _build_structured_summary_payload(
+                model=llm_model,
                 target_summary_language=summary_lang,
                 friendly=friendly,
-                default_topic=cal_title or "Meeting summary",
-                calendar_title=cal_title,
-                calendar_attendees=cal_attendees,
-                progress_callback=progress_callback,
-                step_log_callback=step_log_callback,
+                topic="No speech detected",
+                summary_bullets=["No speech detected."],
+                decisions=[],
+                action_items=[],
+                emotional_summary="No emotional summary available.",
+                questions=_empty_questions(),
+                status="no_speech",
             )
         else:
-            sys_prompt, user_prompt = build_structured_summary_prompts(
-                transcript_speaker_turns,
-                summary_lang,
-                calendar_title=cal_title,
-                calendar_attendees=cal_attendees,
-            )
-            await _emit_progress(progress_callback, stage="llm", progress=0.90)
-            msg = await _generate_llm_message(
-                llm,
-                system_prompt=sys_prompt,
-                user_prompt=user_prompt,
-                model=llm_model,
-                response_format={"type": "json_object"},
-                max_tokens=cfg.llm_max_tokens,
-                max_tokens_retry=cfg.llm_max_tokens_retry,
-            )
-            summary_payload = build_summary_payload(
-                raw_llm_content=str(msg.get("content") or ""),
-                model=llm_model,
-                target_summary_language=summary_lang,
-                friendly=friendly,
-                default_topic=cal_title or "Meeting summary",
-                derived_dir=artifacts.summary_json_path.parent,
-            )
+            friendly = _sentiment_score(transcript_text)
+            llm_prompt_text = _speaker_turn_prompt_text(transcript_speaker_turns, aliases=aliases)
+            if _use_chunked_llm(llm_prompt_text, cfg):
+                summary_payload = await _run_chunked_llm_summary(
+                    transcript_text=llm_prompt_text or transcript_text,
+                    speaker_turns=transcript_speaker_turns,
+                    aliases=aliases,
+                    derived_dir=artifacts.summary_json_path.parent,
+                    llm=llm,
+                    cfg=cfg,
+                    llm_model=llm_model,
+                    target_summary_language=summary_lang,
+                    friendly=friendly,
+                    default_topic=cal_title or "Meeting summary",
+                    calendar_title=cal_title,
+                    calendar_attendees=cal_attendees,
+                    progress_callback=progress_callback,
+                    step_log_callback=step_log_callback,
+                )
+            else:
+                sys_prompt, user_prompt = build_structured_summary_prompts(
+                    transcript_speaker_turns,
+                    summary_lang,
+                    calendar_title=cal_title,
+                    calendar_attendees=cal_attendees,
+                )
+                await _emit_progress(progress_callback, stage="llm", progress=0.90)
+                msg = await _generate_llm_message(
+                    llm,
+                    system_prompt=sys_prompt,
+                    user_prompt=user_prompt,
+                    model=llm_model,
+                    response_format={"type": "json_object"},
+                    max_tokens=cfg.llm_max_tokens,
+                    max_tokens_retry=cfg.llm_max_tokens_retry,
+                )
+                summary_payload = build_summary_payload(
+                    raw_llm_content=str(msg.get("content") or ""),
+                    model=llm_model,
+                    target_summary_language=summary_lang,
+                    friendly=friendly,
+                    default_topic=cal_title or "Meeting summary",
+                    derived_dir=artifacts.summary_json_path.parent,
+                )
         serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in transcript_speaker_turns]
         speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in transcript_speaker_turns))
         atomic_write_text(artifacts.transcript_txt_path, transcript_text)
