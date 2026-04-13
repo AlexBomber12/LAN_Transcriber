@@ -65,7 +65,7 @@ TOTAL   14979      0   5020      0   100%
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1286 passed, 3 skipped, 11 warnings in 113.24s (0:01:53)
+1286 passed, 3 skipped, 11 warnings in 114.54s (0:01:54)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
