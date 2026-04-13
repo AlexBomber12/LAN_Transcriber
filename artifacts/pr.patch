@@ -1,96 +1,146 @@
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 1e174d3..4e79308 100644
+index 4e79308..132b0c8 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -3623,6 +3623,14 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
+@@ -3623,13 +3623,14 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
          ],
          ctx.pipeline_settings.merge_similar,
      )
-+    # When noise exclusion actually altered the turn list, replace the raw ASR
-+    # language_segments with the filtered speaker turns so transcript.json
-+    # consumers (UI fallbacks, metrics) can't resurface excluded content.
-+    transcript_segments = (
-+        list(transcript_speaker_turns)
-+        if transcript_speaker_turns is not ctx.speaker_turns
-+        else language_segments
-+    )
+-    # When noise exclusion actually altered the turn list, replace the raw ASR
+-    # language_segments with the filtered speaker turns so transcript.json
+-    # consumers (UI fallbacks, metrics) can't resurface excluded content.
++    # When noise exclusion actually removed turns (value-based check, not
++    # identity: the list is always fresh when noise_set is non-empty even if
++    # no labels match), replace raw ASR language_segments with the filtered
++    # speaker turns so transcript.json consumers (UI fallbacks, metrics)
++    # can't resurface excluded content.
++    filter_removed_turns = len(transcript_speaker_turns) != len(ctx.speaker_turns)
+     transcript_segments = (
+-        list(transcript_speaker_turns)
+-        if transcript_speaker_turns is not ctx.speaker_turns
+-        else language_segments
++        list(transcript_speaker_turns) if filter_removed_turns else language_segments
+     )
      transcript_payload = pipeline_orchestrator._finalize_transcript_payload(
          pipeline_orchestrator._base_transcript_payload(
-             recording_id=ctx.recording_id,
-@@ -3634,7 +3642,7 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
-             transcript_language_override=ctx.transcript_language_override,
-             calendar_title=ctx.calendar_title,
-             calendar_attendees=ctx.calendar_attendees,
--            segments=language_segments,
-+            segments=transcript_segments,
-             speakers=sorted(
-                 {
-                     aliases.get(str(turn.get("speaker") or "S1"), str(turn.get("speaker") or "S1"))
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index d78e356..9897db9 100644
+index 9897db9..6c694c8 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -3490,15 +3490,15 @@ async def run_pipeline(
+@@ -3490,12 +3490,13 @@ async def run_pipeline(
          serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in transcript_speaker_turns]
          speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in transcript_speaker_turns))
          atomic_write_text(artifacts.transcript_txt_path, transcript_text)
--        # When noise exclusion filtered every speaker, drop language_segments
--        # so UI / metrics fallbacks that rebuild turns from transcript.json
--        # ["segments"] don't re-surface excluded noise text.
--        filter_emptied_turns = (
--            bool(speaker_turns) and not transcript_speaker_turns
--        )
--        transcript_payload_segments = (
--            [] if filter_emptied_turns else language_analysis.segments
--        )
-+        # When noise exclusion actually altered the turn list (partial or
-+        # full), swap the raw ASR language_segments for the filtered speaker
-+        # turns so UI / metrics fallbacks that rebuild turns from
-+        # transcript.json["segments"] can't re-surface excluded noise text.
-+        filter_applied = transcript_speaker_turns is not speaker_turns
-+        if filter_applied:
-+            transcript_payload_segments = list(transcript_speaker_turns)
-+        else:
-+            transcript_payload_segments = language_analysis.segments
-         payload = _finalize_transcript_payload(
-             _base_transcript_payload(
-                 recording_id=artifacts.recording_id,
-diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index 3e821d4..b6d926d 100644
---- a/tests/test_cov_lan_transcriber_extra_pipeline.py
-+++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -3751,6 +3751,14 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
-     assert any(
-         str(turn.get("speaker")) == "S1" for turn in captured_prompts["turns"]
-     )
-+    # transcript.json["segments"] must not carry noise text when the filter
-+    # drops a subset of speakers — UI fallbacks rebuild turns from there.
-+    assert any(
-+        str(seg.get("speaker")) == "S1" for seg in (transcript.get("segments") or [])
-+    )
-+    assert all(
-+        str(seg.get("speaker")) != "S2" for seg in (transcript.get("segments") or [])
-+    )
- 
- 
- @pytest.mark.asyncio
+-        # When noise exclusion actually altered the turn list (partial or
+-        # full), swap the raw ASR language_segments for the filtered speaker
+-        # turns so UI / metrics fallbacks that rebuild turns from
+-        # transcript.json["segments"] can't re-surface excluded noise text.
+-        filter_applied = transcript_speaker_turns is not speaker_turns
+-        if filter_applied:
++        # When noise exclusion actually removed turns (value-based check: the
++        # filter list is always fresh when noise_speakers is non-empty even if
++        # no labels match), swap the raw ASR language_segments for the
++        # filtered speaker turns so UI / metrics fallbacks that rebuild turns
++        # from transcript.json["segments"] can't re-surface excluded noise.
++        filter_removed_turns = len(transcript_speaker_turns) != len(speaker_turns)
++        if filter_removed_turns:
+             transcript_payload_segments = list(transcript_speaker_turns)
+         else:
+             transcript_payload_segments = language_analysis.segments
 diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
-index edc23b8..d2c4bcd 100644
+index d2c4bcd..bb6db3f 100644
 --- a/tests/test_pipeline_resume_coverage.py
 +++ b/tests/test_pipeline_resume_coverage.py
-@@ -1537,6 +1537,15 @@ def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
-     assert all("SPEAKER_NOISE" not in line for line in speaker_lines)
-     assert "SPEAKER_NOISE" not in (transcript_payload.get("speakers") or [])
-     assert "SPEAKER_REAL" in (transcript_payload.get("speakers") or [])
-+    # Partial-filter case must also scrub transcript.json["segments"] so UI
-+    # fallbacks don't rebuild noise turns from raw ASR output.
-+    persisted_segments = transcript_payload.get("segments") or []
-+    assert any(
-+        str(seg.get("speaker")) == "SPEAKER_REAL" for seg in persisted_segments
+@@ -1443,6 +1443,92 @@ def test_stage_export_artifacts_skips_filter_when_noise_detection_disabled(
+     assert any(str(turn.get("speaker")) == "SPEAKER_NOISE" for turn in persisted_turns)
+ 
+ 
++def test_stage_export_artifacts_preserves_segments_when_noise_labels_stale(
++    tmp_path: Path,
++) -> None:
++    """Stale noise_speakers that don't match current turns must not swap segments."""
++
++    cfg, ctx = _new_ctx(
++        tmp_path, "rec-export-stale-labels", create_raw_audio=True
 +    )
-+    assert all(
-+        str(seg.get("speaker")) != "SPEAKER_NOISE" for seg in persisted_segments
++    ctx.pipeline_settings.exclude_noise_speakers_from_transcript = True
++    ctx.pipeline_settings.llm_model = "stub-model"
++    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
++    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
++    ctx.artifacts.audio_sanitize_json_path.write_text(
++        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
++        encoding="utf-8",
 +    )
-     persisted_turns = json.loads(
-         ctx.artifacts.recording_artifacts.speaker_turns_json_path.read_text(encoding="utf-8")
-     )
++    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
++        json.dumps(
++            {"degraded": False, "noise_speakers": ["SPEAKER_GHOST"]}
++        ),
++        encoding="utf-8",
++    )
++    ctx.artifacts.diarization_segments_json_path.write_text(
++        json.dumps([{"speaker": "SPEAKER_REAL", "start": 0.0, "end": 1.0}]),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
++        json.dumps(
++            [
++                {
++                    "speaker": "SPEAKER_REAL",
++                    "start": 0.0,
++                    "end": 1.0,
++                    "text": "hello team this is the real speaker speaking now",
++                }
++            ]
++        ),
++        encoding="utf-8",
++    )
++    snippets_dir = ctx.artifacts.recording_artifacts.snippets_dir
++    snippets_dir.mkdir(parents=True, exist_ok=True)
++    (snippets_dir.parent / "snippets_manifest.json").write_text(
++        json.dumps({"version": 1, "speakers": {}, "manifest_status": "ok"}),
++        encoding="utf-8",
++    )
++    derived = ctx.artifacts.derived_dir
++    raw_segment = {
++        "text": "hello team this is the real speaker speaking now",
++        "start": 0.0,
++        "end": 1.0,
++        "language": "en",
++    }
++    (derived / "language_analysis.json").write_text(
++        json.dumps(
++            {
++                "language": {"detected": "en", "confidence": 0.9},
++                "dominant_language": "en",
++                "language_distribution": {"en": 1.0},
++                "language_spans": [],
++                "segments": [raw_segment],
++                "target_summary_language": "en",
++                "review": {},
++            }
++        ),
++        encoding="utf-8",
++    )
++    (derived / "asr_execution.json").write_text(
++        json.dumps({"used_multilingual_path": False, "selected_mode": "single_language"}),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.summary_json_path.write_text(
++        json.dumps({"status": "ok", "summary": "ok"}),
++        encoding="utf-8",
++    )
++
++    result = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
++    assert result.status == "completed"
++    transcript_payload = json.loads(
++        ctx.artifacts.recording_artifacts.transcript_json_path.read_text(encoding="utf-8")
++    )
++    # Stale noise label doesn't match any real speaker, so segments stay as
++    # raw ASR output (language metadata preserved) rather than speaker turns.
++    segments = transcript_payload.get("segments") or []
++    assert any(seg.get("language") == "en" for seg in segments)
++
++
+ def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
+     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+ ) -> None:

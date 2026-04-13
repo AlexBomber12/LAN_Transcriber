@@ -1443,6 +1443,92 @@ def test_stage_export_artifacts_skips_filter_when_noise_detection_disabled(
     assert any(str(turn.get("speaker")) == "SPEAKER_NOISE" for turn in persisted_turns)
 
 
+def test_stage_export_artifacts_preserves_segments_when_noise_labels_stale(
+    tmp_path: Path,
+) -> None:
+    """Stale noise_speakers that don't match current turns must not swap segments."""
+
+    cfg, ctx = _new_ctx(
+        tmp_path, "rec-export-stale-labels", create_raw_audio=True
+    )
+    ctx.pipeline_settings.exclude_noise_speakers_from_transcript = True
+    ctx.pipeline_settings.llm_model = "stub-model"
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
+    ctx.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+        json.dumps(
+            {"degraded": False, "noise_speakers": ["SPEAKER_GHOST"]}
+        ),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_segments_json_path.write_text(
+        json.dumps([{"speaker": "SPEAKER_REAL", "start": 0.0, "end": 1.0}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps(
+            [
+                {
+                    "speaker": "SPEAKER_REAL",
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "hello team this is the real speaker speaking now",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    snippets_dir = ctx.artifacts.recording_artifacts.snippets_dir
+    snippets_dir.mkdir(parents=True, exist_ok=True)
+    (snippets_dir.parent / "snippets_manifest.json").write_text(
+        json.dumps({"version": 1, "speakers": {}, "manifest_status": "ok"}),
+        encoding="utf-8",
+    )
+    derived = ctx.artifacts.derived_dir
+    raw_segment = {
+        "text": "hello team this is the real speaker speaking now",
+        "start": 0.0,
+        "end": 1.0,
+        "language": "en",
+    }
+    (derived / "language_analysis.json").write_text(
+        json.dumps(
+            {
+                "language": {"detected": "en", "confidence": 0.9},
+                "dominant_language": "en",
+                "language_distribution": {"en": 1.0},
+                "language_spans": [],
+                "segments": [raw_segment],
+                "target_summary_language": "en",
+                "review": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "asr_execution.json").write_text(
+        json.dumps({"used_multilingual_path": False, "selected_mode": "single_language"}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.summary_json_path.write_text(
+        json.dumps({"status": "ok", "summary": "ok"}),
+        encoding="utf-8",
+    )
+
+    result = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
+    assert result.status == "completed"
+    transcript_payload = json.loads(
+        ctx.artifacts.recording_artifacts.transcript_json_path.read_text(encoding="utf-8")
+    )
+    # Stale noise label doesn't match any real speaker, so segments stay as
+    # raw ASR output (language metadata preserved) rather than speaker turns.
+    segments = transcript_payload.get("segments") or []
+    assert any(seg.get("language") == "en" for seg in segments)
+
+
 def test_stage_export_artifacts_filters_noise_speakers_from_transcript(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

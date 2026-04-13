@@ -3490,12 +3490,13 @@ async def run_pipeline(
         serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in transcript_speaker_turns]
         speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in transcript_speaker_turns))
         atomic_write_text(artifacts.transcript_txt_path, transcript_text)
-        # When noise exclusion actually altered the turn list (partial or
-        # full), swap the raw ASR language_segments for the filtered speaker
-        # turns so UI / metrics fallbacks that rebuild turns from
-        # transcript.json["segments"] can't re-surface excluded noise text.
-        filter_applied = transcript_speaker_turns is not speaker_turns
-        if filter_applied:
+        # When noise exclusion actually removed turns (value-based check: the
+        # filter list is always fresh when noise_speakers is non-empty even if
+        # no labels match), swap the raw ASR language_segments for the
+        # filtered speaker turns so UI / metrics fallbacks that rebuild turns
+        # from transcript.json["segments"] can't re-surface excluded noise.
+        filter_removed_turns = len(transcript_speaker_turns) != len(speaker_turns)
+        if filter_removed_turns:
             transcript_payload_segments = list(transcript_speaker_turns)
         else:
             transcript_payload_segments = language_analysis.segments

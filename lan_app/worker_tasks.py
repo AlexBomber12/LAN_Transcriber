@@ -3623,13 +3623,14 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
         ],
         ctx.pipeline_settings.merge_similar,
     )
-    # When noise exclusion actually altered the turn list, replace the raw ASR
-    # language_segments with the filtered speaker turns so transcript.json
-    # consumers (UI fallbacks, metrics) can't resurface excluded content.
+    # When noise exclusion actually removed turns (value-based check, not
+    # identity: the list is always fresh when noise_set is non-empty even if
+    # no labels match), replace raw ASR language_segments with the filtered
+    # speaker turns so transcript.json consumers (UI fallbacks, metrics)
+    # can't resurface excluded content.
+    filter_removed_turns = len(transcript_speaker_turns) != len(ctx.speaker_turns)
     transcript_segments = (
-        list(transcript_speaker_turns)
-        if transcript_speaker_turns is not ctx.speaker_turns
-        else language_segments
+        list(transcript_speaker_turns) if filter_removed_turns else language_segments
     )
     transcript_payload = pipeline_orchestrator._finalize_transcript_payload(
         pipeline_orchestrator._base_transcript_payload(
