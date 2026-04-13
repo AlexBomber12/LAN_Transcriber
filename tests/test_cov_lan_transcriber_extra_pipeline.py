@@ -3687,6 +3687,14 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
         lambda *_a, **_k: None,
     )
 
+    captured_prompts: dict[str, Any] = {}
+
+    def _capture_prompts(turns, summary_lang, *, calendar_title=None, calendar_attendees=None):
+        captured_prompts["turns"] = list(turns)
+        return ("sys-prompt", "user-prompt")
+
+    monkeypatch.setattr(pipeline, "build_structured_summary_prompts", _capture_prompts)
+
     class _NoiseDiariser:
         async def __call__(self, _audio_path: Path):
             return _annotation_from_segments(
@@ -3736,6 +3744,13 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
     assert "hello team and thanks" in transcript_txt
     assert transcript["text"] == transcript_txt
     assert result.body == transcript_txt
+    assert captured_prompts["turns"], "LLM prompt builder must be called"
+    assert all(
+        str(turn.get("speaker")) != "S2" for turn in captured_prompts["turns"]
+    )
+    assert any(
+        str(turn.get("speaker")) == "S1" for turn in captured_prompts["turns"]
+    )
 
 
 @pytest.mark.asyncio

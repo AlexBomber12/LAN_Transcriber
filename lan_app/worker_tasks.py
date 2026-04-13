@@ -3310,9 +3310,33 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
         or "en"
     )
     aliases = load_speaker_aliases(ctx.pipeline_settings.speaker_db)
-    ctx.friendly = pipeline_orchestrator._sentiment_score(ctx.clean_text)
+    summary_speaker_turns = ctx.speaker_turns
+    summary_text = ctx.clean_text
+    if (
+        ctx.pipeline_settings.noise_detection_enabled
+        and ctx.pipeline_settings.exclude_noise_speakers_from_transcript
+    ):
+        diarization_metadata = _load_json_dict(
+            ctx.artifacts.recording_artifacts.diarization_metadata_json_path
+        )
+        noise_raw = diarization_metadata.get("noise_speakers")
+        if isinstance(noise_raw, list):
+            noise_set = {str(item) for item in noise_raw}
+            if noise_set:
+                summary_speaker_turns = [
+                    turn
+                    for turn in ctx.speaker_turns
+                    if str(turn.get("speaker") or "S1") not in noise_set
+                ]
+                summary_text = normalizer.dedup(
+                    " ".join(
+                        str(turn.get("text") or "").strip()
+                        for turn in summary_speaker_turns
+                    ).strip()
+                )
+    ctx.friendly = pipeline_orchestrator._sentiment_score(summary_text or ctx.clean_text)
     llm_prompt_text = pipeline_orchestrator._speaker_turn_prompt_text(
-        ctx.speaker_turns,
+        summary_speaker_turns,
         aliases=aliases,
     )
     cancel_aware_llm = _CancelAwareLLMClient(
@@ -3334,8 +3358,8 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
     if pipeline_orchestrator._use_chunked_llm(llm_prompt_text, ctx.pipeline_settings):
         ctx.summary_payload = asyncio.run(
             pipeline_orchestrator._run_chunked_llm_summary(
-                transcript_text=llm_prompt_text or ctx.clean_text,
-                speaker_turns=ctx.speaker_turns,
+                transcript_text=llm_prompt_text or summary_text,
+                speaker_turns=summary_speaker_turns,
                 aliases=aliases,
                 derived_dir=ctx.artifacts.derived_dir,
                 llm=cancel_aware_llm,
@@ -3361,7 +3385,7 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
         )
     else:
         sys_prompt, user_prompt = build_structured_summary_prompts(
-            ctx.speaker_turns,
+            summary_speaker_turns,
             summary_lang,
             calendar_title=ctx.calendar_title,
             calendar_attendees=ctx.calendar_attendees,
