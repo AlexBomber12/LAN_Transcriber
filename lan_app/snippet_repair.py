@@ -484,7 +484,7 @@ def _build_staged_snippet_outputs(
     *,
     settings: AppSettings,
     pipeline_settings: PipelineSettings,
-) -> tuple[Path, dict[str, Any]]:
+) -> tuple[Path, dict[str, Any], dict[str, Any] | None]:
     temp_root = _staged_snippet_output_root(eligibility.recording_id, settings=settings)
     staged_snippets_dir = temp_root / "snippets"
     try:
@@ -504,7 +504,7 @@ def _build_staged_snippet_outputs(
                     }
                 ],
             )
-            return temp_root, manifest
+            return temp_root, manifest, None
 
         export_speaker_snippets(
             SnippetExportRequest(
@@ -521,8 +521,9 @@ def _build_staged_snippet_outputs(
             )
         )
         manifest_path = staged_snippets_dir.parent / "snippets_manifest.json"
+        noise_summary: dict[str, Any] | None = None
         if pipeline_settings.noise_detection_enabled:
-            apply_noise_flags_to_manifest(
+            noise_summary = apply_noise_flags_to_manifest(
                 manifest_path,
                 snippets_dir=staged_snippets_dir,
                 threshold=pipeline_settings.noise_speech_ratio_threshold,
@@ -543,7 +544,7 @@ def _build_staged_snippet_outputs(
             manifest_status=manifest_status,
             degraded_diarization=eligibility.degraded_diarization,
         )
-        return temp_root, manifest
+        return temp_root, manifest, noise_summary
     except SnippetRepairError:
         shutil.rmtree(temp_root, ignore_errors=True)
         raise
@@ -672,22 +673,22 @@ def repair_recording_snippets(
         ),
         settings=cfg,
     )
-    staged_root, manifest = _build_staged_snippet_outputs(
+    staged_root, manifest, noise_summary = _build_staged_snippet_outputs(
         eligibility,
         settings=cfg,
         pipeline_settings=pipeline_settings,
     )
     _replace_staged_snippet_outputs(recording_id, staged_root, settings=cfg)
     if pipeline_settings.noise_detection_enabled:
-        noise_speakers = manifest.get("noise_speakers")
-        if not isinstance(noise_speakers, list):
-            noise_speakers = []
+        summary_source = noise_summary or {}
         update_diarization_metadata_with_noise(
             _derived_dir(recording_id, settings=cfg) / "diarization_metadata.json",
             summary={
-                "noise_speakers": list(noise_speakers),
-                "speaker_metrics": {},
-                "threshold": pipeline_settings.noise_speech_ratio_threshold,
+                "noise_speakers": list(summary_source.get("noise_speakers") or []),
+                "speaker_metrics": dict(summary_source.get("speaker_metrics") or {}),
+                "threshold": summary_source.get(
+                    "threshold", pipeline_settings.noise_speech_ratio_threshold
+                ),
             },
         )
     metadata = snippet_export_result_metadata(manifest)

@@ -1216,6 +1216,9 @@ def test_stage_export_artifacts_no_speech_speakers_excludes_filtered(
     )
     assert transcript_payload.get("speakers") == []
     assert transcript_payload.get("text") == ""
+    # language_segments are dropped so refresh_recording_metrics can't rebuild
+    # participant metrics from noise text when all turns were filtered.
+    assert transcript_payload.get("segments") == []
 
 
 def test_stage_snippet_export_clears_stale_noise_metadata_on_failure(

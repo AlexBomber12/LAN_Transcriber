@@ -615,7 +615,7 @@ def test_staged_output_helpers_cover_no_speech_partial_degraded_and_cleanup(
         diarization_segments=({"speaker": "S1", "start": 0.0, "end": 1.0},),
         speaker_turns=(),
     )
-    temp_root, manifest = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
+    temp_root, manifest, _noise_summary = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
         empty_eligibility,
         settings=cfg,
         pipeline_settings=pipeline_settings,
@@ -643,7 +643,7 @@ def test_staged_output_helpers_cover_no_speech_partial_degraded_and_cleanup(
 
     monkeypatch.setattr(snippet_repair, "export_speaker_snippets", _partial_export)
     partial_eligibility = snippet_repair.assess_snippet_repair("rec-staged-1", settings=cfg)
-    temp_root, manifest = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
+    temp_root, manifest, _noise_summary = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
         partial_eligibility,
         settings=cfg,
         pipeline_settings=pipeline_settings,
@@ -665,7 +665,7 @@ def test_staged_output_helpers_cover_no_speech_partial_degraded_and_cleanup(
             "degraded_diarization": True,
         }
     )
-    temp_root, manifest = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
+    temp_root, manifest, _noise_summary = snippet_repair._build_staged_snippet_outputs(  # noqa: SLF001
         degraded_eligibility,
         settings=cfg,
         pipeline_settings=pipeline_settings,
@@ -809,10 +809,11 @@ def test_repair_recording_snippets_updates_diarization_noise_metadata(
     )
 
     persisted = json.loads(metadata_path.read_text(encoding="utf-8"))
-    # Noise list is re-derived from the manifest after the move, so the
-    # stale STALE_NOISE flag must be gone and replaced with current data
-    # from the manifest (empty list since our fake did not mutate the manifest).
-    assert persisted["noise_speakers"] == []
+    # The repair flow now forwards the noise summary (speakers + metrics) from
+    # apply_noise_flags_to_manifest onto diarization_metadata, so stale values
+    # are wiped and repaired metrics land in the metadata alongside the list.
+    assert persisted["noise_speakers"] == ["S2"]
+    assert persisted["noise_speaker_metrics"]["S2"]["flagged"] is True
 
 
 def test_repair_recording_snippets_skips_noise_detection_when_disabled(
