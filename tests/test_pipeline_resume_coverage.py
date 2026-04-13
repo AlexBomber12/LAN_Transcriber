@@ -1058,10 +1058,14 @@ def test_stage_snippet_export_skips_metadata_noise_when_manifest_value_invalid(
     )
 
     def _no_op_metadata(*_a, **_k):
-        # Re-corrupt the manifest after apply_noise_flags_to_manifest so the
-        # finalize step preserves a non-list noise_speakers entry. This exercises
-        # the defensive isinstance guard in _stage_snippet_export.
+        # _stage_snippet_export now calls update_diarization_metadata_with_noise
+        # twice: once upfront to clear stale noise data (manifest doesn't exist
+        # yet) and once after the snippet pass. Only the post-snippet call
+        # should re-corrupt the manifest to exercise the defensive isinstance
+        # guard for a non-list noise_speakers entry.
         manifest_path = worker_tasks._snippets_manifest_path(ctx)  # noqa: SLF001
+        if not manifest_path.exists():
+            return
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["noise_speakers"] = "still-not-a-list"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -1125,6 +1129,51 @@ def test_stage_snippet_export_skips_noise_detection_when_disabled(
 
     result = worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
     assert "noise_speakers" not in result.metadata
+
+
+def test_stage_snippet_export_clears_stale_noise_metadata_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed snippet export must wipe stale noise_speakers from prior runs."""
+
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-snippet-stale", create_raw_audio=True)
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
+    ctx.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_segments_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
+        encoding="utf-8",
+    )
+    metadata_path = ctx.artifacts.recording_artifacts.diarization_metadata_json_path
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "degraded": False,
+                "noise_speakers": ["SPEAKER_STALE"],
+                "noise_speaker_metrics": {"SPEAKER_STALE": {"flagged": True}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _failing_export(_request):
+        raise RuntimeError("simulated export failure")
+
+    monkeypatch.setattr(worker_tasks, "export_speaker_snippets", _failing_export)
+
+    result = worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
+    assert result.status == "completed"
+    assert result.metadata["manifest_status"] == "export_failed"
+    persisted_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert persisted_metadata["noise_speakers"] == []
+    assert persisted_metadata["noise_speaker_metrics"] == {}
 
 
 def test_stage_export_artifacts_exclude_noise_handles_missing_or_empty_noise_list(

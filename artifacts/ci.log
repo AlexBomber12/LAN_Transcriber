@@ -15,12 +15,12 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 56%]
 ........................................................................ [ 62%]
 ........................................................................ [ 67%]
-......................................................s................. [ 73%]
+.......................................................s................ [ 73%]
 ........................................................................ [ 79%]
 ........................................................................ [ 84%]
 ........................................................................ [ 90%]
 ........................................................................ [ 96%]
-................................................                         [100%]
+.................................................                        [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -59,13 +59,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.11.9-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   14929      0   5000      0   100%
+TOTAL   14934      0   5000      0   100%
 
 66 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1271 passed, 3 skipped, 11 warnings in 115.89s (0:01:55)
+1272 passed, 3 skipped, 11 warnings in 117.84s (0:01:57)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -136,7 +136,7 @@ lan_app/ui_routes.py                2683      0   1020      0   100%
 lan_app/uploads.py                    79      0     14      0   100%
 lan_app/worker.py                     31      0      2      0   100%
 lan_app/worker_status.py              58      0      6      0   100%
-lan_app/worker_tasks.py             1762      0    516      0   100%
+lan_app/worker_tasks.py             1767      0    516      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                              10224      0   3374      0   100%
+TOTAL                              10229      0   3374      0   100%

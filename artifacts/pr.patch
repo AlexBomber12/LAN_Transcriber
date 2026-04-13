@@ -1,323 +1,108 @@
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index c928cc7..b16cd77 100644
+index b16cd77..1ffe391 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -3310,9 +3310,33 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
-         or "en"
-     )
-     aliases = load_speaker_aliases(ctx.pipeline_settings.speaker_db)
--    ctx.friendly = pipeline_orchestrator._sentiment_score(ctx.clean_text)
-+    summary_speaker_turns = ctx.speaker_turns
-+    summary_text = ctx.clean_text
-+    if (
-+        ctx.pipeline_settings.noise_detection_enabled
-+        and ctx.pipeline_settings.exclude_noise_speakers_from_transcript
-+    ):
-+        diarization_metadata = _load_json_dict(
-+            ctx.artifacts.recording_artifacts.diarization_metadata_json_path
-+        )
-+        noise_raw = diarization_metadata.get("noise_speakers")
-+        if isinstance(noise_raw, list):
-+            noise_set = {str(item) for item in noise_raw}
-+            if noise_set:
-+                summary_speaker_turns = [
-+                    turn
-+                    for turn in ctx.speaker_turns
-+                    if str(turn.get("speaker") or "S1") not in noise_set
-+                ]
-+                summary_text = normalizer.dedup(
-+                    " ".join(
-+                        str(turn.get("text") or "").strip()
-+                        for turn in summary_speaker_turns
-+                    ).strip()
-+                )
-+    ctx.friendly = pipeline_orchestrator._sentiment_score(summary_text or ctx.clean_text)
-     llm_prompt_text = pipeline_orchestrator._speaker_turn_prompt_text(
--        ctx.speaker_turns,
-+        summary_speaker_turns,
-         aliases=aliases,
-     )
-     cancel_aware_llm = _CancelAwareLLMClient(
-@@ -3334,8 +3358,8 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
-     if pipeline_orchestrator._use_chunked_llm(llm_prompt_text, ctx.pipeline_settings):
-         ctx.summary_payload = asyncio.run(
-             pipeline_orchestrator._run_chunked_llm_summary(
--                transcript_text=llm_prompt_text or ctx.clean_text,
--                speaker_turns=ctx.speaker_turns,
-+                transcript_text=llm_prompt_text or summary_text,
-+                speaker_turns=summary_speaker_turns,
-                 aliases=aliases,
-                 derived_dir=ctx.artifacts.derived_dir,
-                 llm=cancel_aware_llm,
-@@ -3361,7 +3385,7 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
-         )
-     else:
-         sys_prompt, user_prompt = build_structured_summary_prompts(
--            ctx.speaker_turns,
-+            summary_speaker_turns,
-             summary_lang,
-             calendar_title=ctx.calendar_title,
-             calendar_attendees=ctx.calendar_attendees,
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 4219756..33410e7 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -3426,12 +3426,12 @@ async def run_pipeline(
-             ],
-             cfg.merge_similar,
-         )
--        friendly = _sentiment_score(clean_text)
--        llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
-+        friendly = _sentiment_score(transcript_text)
-+        llm_prompt_text = _speaker_turn_prompt_text(transcript_speaker_turns, aliases=aliases)
-         if _use_chunked_llm(llm_prompt_text, cfg):
-             summary_payload = await _run_chunked_llm_summary(
--                transcript_text=llm_prompt_text or clean_text,
--                speaker_turns=speaker_turns,
-+                transcript_text=llm_prompt_text or transcript_text,
-+                speaker_turns=transcript_speaker_turns,
-                 aliases=aliases,
-                 derived_dir=artifacts.summary_json_path.parent,
-                 llm=llm,
-@@ -3447,7 +3447,7 @@ async def run_pipeline(
-             )
-         else:
-             sys_prompt, user_prompt = build_structured_summary_prompts(
--                speaker_turns,
-+                transcript_speaker_turns,
-                 summary_lang,
-                 calendar_title=cal_title,
-                 calendar_attendees=cal_attendees,
-diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index 97628c2..72319ff 100644
---- a/tests/test_cov_lan_transcriber_extra_pipeline.py
-+++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -3687,6 +3687,14 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
-         lambda *_a, **_k: None,
+@@ -3106,11 +3106,29 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
      )
  
-+    captured_prompts: dict[str, Any] = {}
+ 
++def _empty_noise_summary(ctx: _PipelineExecutionContext) -> dict[str, Any]:
++    return {
++        "noise_speakers": [],
++        "speaker_metrics": {},
++        "threshold": ctx.pipeline_settings.noise_speech_ratio_threshold,
++    }
 +
-+    def _capture_prompts(turns, summary_lang, *, calendar_title=None, calendar_attendees=None):
-+        captured_prompts["turns"] = list(turns)
-+        return ("sys-prompt", "user-prompt")
 +
-+    monkeypatch.setattr(pipeline, "build_structured_summary_prompts", _capture_prompts)
-+
-     class _NoiseDiariser:
-         async def __call__(self, _audio_path: Path):
-             return _annotation_from_segments(
-@@ -3736,6 +3744,13 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
-     assert "hello team and thanks" in transcript_txt
-     assert transcript["text"] == transcript_txt
-     assert result.body == transcript_txt
-+    assert captured_prompts["turns"], "LLM prompt builder must be called"
-+    assert all(
-+        str(turn.get("speaker")) != "S2" for turn in captured_prompts["turns"]
++def _clear_noise_metadata(ctx: _PipelineExecutionContext) -> None:
++    """Reset noise_speakers in diarization_metadata so stale data from a prior
++    snippet-export run cannot bleed into a new attempt's transcript filter."""
++    update_diarization_metadata_with_noise(
++        ctx.artifacts.recording_artifacts.diarization_metadata_json_path,
++        summary=_empty_noise_summary(ctx),
 +    )
-+    assert any(
-+        str(turn.get("speaker")) == "S1" for turn in captured_prompts["turns"]
-+    )
- 
- 
- @pytest.mark.asyncio
++
++
+ def _stage_snippet_export(ctx: _PipelineExecutionContext) -> _StageResult:
+     precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
+     ctx.precheck_result = precheck_result
+     if precheck_result is None:
+         raise RuntimeError("Missing precheck artifact")
++    _clear_noise_metadata(ctx)
+     if precheck_result.quarantine_reason:
+         manifest = _write_empty_snippet_manifest(
+             ctx,
 diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
-index f619429..34eb180 100644
+index 34eb180..b626ef3 100644
 --- a/tests/test_pipeline_resume_coverage.py
 +++ b/tests/test_pipeline_resume_coverage.py
-@@ -1659,6 +1659,195 @@ def test_stage_export_artifacts_uses_existing_snippet_manifest_only(
-     assert result.metadata["snippets"] == 1
+@@ -1058,10 +1058,14 @@ def test_stage_snippet_export_skips_metadata_noise_when_manifest_value_invalid(
+     )
+ 
+     def _no_op_metadata(*_a, **_k):
+-        # Re-corrupt the manifest after apply_noise_flags_to_manifest so the
+-        # finalize step preserves a non-list noise_speakers entry. This exercises
+-        # the defensive isinstance guard in _stage_snippet_export.
++        # _stage_snippet_export now calls update_diarization_metadata_with_noise
++        # twice: once upfront to clear stale noise data (manifest doesn't exist
++        # yet) and once after the snippet pass. Only the post-snippet call
++        # should re-corrupt the manifest to exercise the defensive isinstance
++        # guard for a non-list noise_speakers entry.
+         manifest_path = worker_tasks._snippets_manifest_path(ctx)  # noqa: SLF001
++        if not manifest_path.exists():
++            return
+         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+         manifest["noise_speakers"] = "still-not-a-list"
+         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+@@ -1127,6 +1131,51 @@ def test_stage_snippet_export_skips_noise_detection_when_disabled(
+     assert "noise_speakers" not in result.metadata
  
  
-+def test_stage_llm_extract_filters_noise_speakers_from_summary_inputs(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
++def test_stage_snippet_export_clears_stale_noise_metadata_on_failure(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 +) -> None:
-+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-llm-noise-filter")
-+    ctx.pipeline_settings.exclude_noise_speakers_from_transcript = True
++    """A failed snippet export must wipe stale noise_speakers from prior runs."""
++
++    _cfg_value, ctx = _new_ctx(tmp_path, "rec-snippet-stale", create_raw_audio=True)
 +    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
-+    ctx.artifacts.language_analysis_json_path.write_text(
++    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
++    ctx.artifacts.audio_sanitize_json_path.write_text(
++        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
++        encoding="utf-8",
++    )
++    ctx.artifacts.diarization_segments_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
++        encoding="utf-8",
++    )
++    metadata_path = ctx.artifacts.recording_artifacts.diarization_metadata_json_path
++    metadata_path.write_text(
 +        json.dumps(
 +            {
-+                "segments": [
-+                    {
-+                        "start": 0.0,
-+                        "end": 1.0,
-+                        "text": "hello team this is the real speaker speaking now",
-+                    }
-+                ],
-+                "target_summary_language": "en",
++                "degraded": False,
++                "noise_speakers": ["SPEAKER_STALE"],
++                "noise_speaker_metrics": {"SPEAKER_STALE": {"flagged": True}},
 +            }
 +        ),
 +        encoding="utf-8",
 +    )
-+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
-+        json.dumps(
-+            [
-+                {
-+                    "speaker": "SPEAKER_REAL",
-+                    "start": 0.0,
-+                    "end": 1.0,
-+                    "text": "hello team this is the real speaker speaking now",
-+                },
-+                {
-+                    "speaker": "SPEAKER_NOISE",
-+                    "start": 1.0,
-+                    "end": 1.5,
-+                    "text": "background noise hiss static hum buzz crackle",
-+                },
-+            ]
-+        ),
-+        encoding="utf-8",
-+    )
-+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
-+        json.dumps({"degraded": False, "noise_speakers": ["SPEAKER_NOISE"]}),
-+        encoding="utf-8",
-+    )
 +
-+    captured: dict[str, object] = {}
++    def _failing_export(_request):
++        raise RuntimeError("simulated export failure")
 +
-+    def _capture_prompts(turns, summary_lang, *, calendar_title=None, calendar_attendees=None):
-+        captured["turns"] = list(turns)
-+        return ("sys", "user")
++    monkeypatch.setattr(worker_tasks, "export_speaker_snippets", _failing_export)
 +
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator, "_require_llm_model", lambda _m: "test-model"
-+    )
-+    monkeypatch.setattr(worker_tasks, "LLMClient", lambda: object())
-+    monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _p: {})
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator, "_sentiment_score", lambda _text: 3
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator, "_use_chunked_llm", lambda *_a, **_k: False
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "_load_calendar_summary_context",
-+        lambda *_a, **_k: ("Weekly Sync", []),
-+    )
-+    monkeypatch.setattr(worker_tasks, "build_structured_summary_prompts", _capture_prompts)
-+
-+    async def _fake_generate(*_a, **_k):
-+        return {"content": json.dumps({"topic": "ok", "summary_bullets": ["x"]})}
-+
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator, "_generate_llm_message", _fake_generate
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "build_summary_payload",
-+        lambda **_k: {"status": "ok", "topic": "ok"},
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "_set_recording_progress_best_effort",
-+        lambda *_a, **_k: None,
-+    )
-+
-+    result = worker_tasks._stage_llm_extract(ctx)  # noqa: SLF001
++    result = worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
 +    assert result.status == "completed"
-+    assert captured["turns"], "build_structured_summary_prompts must be called"
-+    assert all(
-+        str(turn.get("speaker")) != "SPEAKER_NOISE" for turn in captured["turns"]
-+    )
-+    assert any(
-+        str(turn.get("speaker")) == "SPEAKER_REAL" for turn in captured["turns"]
-+    )
++    assert result.metadata["manifest_status"] == "export_failed"
++    persisted_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
++    assert persisted_metadata["noise_speakers"] == []
++    assert persisted_metadata["noise_speaker_metrics"] == {}
 +
 +
-+@pytest.mark.parametrize("noise_payload", [None, []])
-+def test_stage_llm_extract_skips_filter_when_noise_metadata_unusable(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+    noise_payload: object,
-+) -> None:
-+    """Filter skip paths: noise_speakers missing or empty should not drop turns."""
-+
-+    suffix = "none" if noise_payload is None else "empty"
-+    _cfg_value, ctx = _new_ctx(tmp_path, f"rec-llm-noise-skip-{suffix}")
-+    ctx.pipeline_settings.exclude_noise_speakers_from_transcript = True
-+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
-+    ctx.artifacts.language_analysis_json_path.write_text(
-+        json.dumps(
-+            {
-+                "segments": [
-+                    {
-+                        "start": 0.0,
-+                        "end": 1.0,
-+                        "text": "hello team this is the real speaker speaking now",
-+                    }
-+                ],
-+                "target_summary_language": "en",
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
-+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
-+        json.dumps(
-+            [
-+                {
-+                    "speaker": "S1",
-+                    "start": 0.0,
-+                    "end": 1.0,
-+                    "text": "hello team this is the real speaker speaking now",
-+                }
-+            ]
-+        ),
-+        encoding="utf-8",
-+    )
-+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
-+        json.dumps({"degraded": False, "noise_speakers": noise_payload}),
-+        encoding="utf-8",
-+    )
-+
-+    captured: dict[str, object] = {}
-+
-+    def _capture_prompts(turns, summary_lang, *, calendar_title=None, calendar_attendees=None):
-+        captured["turns"] = list(turns)
-+        return ("sys", "user")
-+
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator, "_require_llm_model", lambda _m: "test-model"
-+    )
-+    monkeypatch.setattr(worker_tasks, "LLMClient", lambda: object())
-+    monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _p: {})
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator, "_sentiment_score", lambda _text: 3
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator, "_use_chunked_llm", lambda *_a, **_k: False
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "_load_calendar_summary_context",
-+        lambda *_a, **_k: ("Weekly Sync", []),
-+    )
-+    monkeypatch.setattr(worker_tasks, "build_structured_summary_prompts", _capture_prompts)
-+
-+    async def _fake_generate(*_a, **_k):
-+        return {"content": json.dumps({"topic": "ok", "summary_bullets": ["x"]})}
-+
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator, "_generate_llm_message", _fake_generate
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "build_summary_payload",
-+        lambda **_k: {"status": "ok", "topic": "ok"},
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "_set_recording_progress_best_effort",
-+        lambda *_a, **_k: None,
-+    )
-+
-+    result = worker_tasks._stage_llm_extract(ctx)  # noqa: SLF001
-+    assert result.status == "completed"
-+    assert any(str(turn.get("speaker")) == "S1" for turn in captured["turns"])
-+
-+
- def test_stage_llm_extract_chunked_summary_invokes_progress_callback(
+ def test_stage_export_artifacts_exclude_noise_handles_missing_or_empty_noise_list(
      tmp_path: Path,
-     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:

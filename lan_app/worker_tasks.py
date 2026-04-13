@@ -3106,11 +3106,29 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
     )
 
 
+def _empty_noise_summary(ctx: _PipelineExecutionContext) -> dict[str, Any]:
+    return {
+        "noise_speakers": [],
+        "speaker_metrics": {},
+        "threshold": ctx.pipeline_settings.noise_speech_ratio_threshold,
+    }
+
+
+def _clear_noise_metadata(ctx: _PipelineExecutionContext) -> None:
+    """Reset noise_speakers in diarization_metadata so stale data from a prior
+    snippet-export run cannot bleed into a new attempt's transcript filter."""
+    update_diarization_metadata_with_noise(
+        ctx.artifacts.recording_artifacts.diarization_metadata_json_path,
+        summary=_empty_noise_summary(ctx),
+    )
+
+
 def _stage_snippet_export(ctx: _PipelineExecutionContext) -> _StageResult:
     precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
     ctx.precheck_result = precheck_result
     if precheck_result is None:
         raise RuntimeError("Missing precheck artifact")
+    _clear_noise_metadata(ctx)
     if precheck_result.quarantine_reason:
         manifest = _write_empty_snippet_manifest(
             ctx,
