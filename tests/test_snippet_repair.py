@@ -829,7 +829,9 @@ def test_repair_recording_snippets_skips_noise_detection_when_disabled(
         settings=cfg,
     )
     _seed_repair_artifacts(cfg, "rec-repair-no-noise")
-    monkeypatch.setenv("LAN_NOISE_DETECTION_ENABLED", "false")
+    # Disabling noise detection on the AppSettings override (rather than via
+    # process env) must propagate into PipelineSettings inside repair_recording_snippets.
+    cfg.noise_detection_enabled = False
     monkeypatch.setattr(
         snippet_repair,
         "apply_noise_flags_to_manifest",

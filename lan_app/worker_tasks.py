@@ -3600,13 +3600,19 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
                 for turn in transcript_speaker_turns
             }
         )
-        # When noise exclusion filtered out every turn, drop language_segments
-        # too so downstream metrics (refresh_recording_metrics) don't re-read
-        # noise ASR text via the transcript.json["segments"] fallback.
+        # When noise exclusion is active (fresh removal or persisted from a
+        # prior run that already emptied speaker_turns.json) drop
+        # language_segments too so downstream metrics
+        # (refresh_recording_metrics) don't re-read noise ASR text via the
+        # transcript.json["segments"] fallback.
         filter_emptied_turns = (
             bool(ctx.speaker_turns) and not transcript_speaker_turns
         )
-        no_speech_segments = [] if filter_emptied_turns else language_segments
+        no_speech_segments = (
+            []
+            if filter_emptied_turns or noise_filter_active
+            else language_segments
+        )
         atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, "")
         atomic_write_json(
             ctx.artifacts.recording_artifacts.transcript_json_path,

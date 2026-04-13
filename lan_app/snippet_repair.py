@@ -655,7 +655,15 @@ def repair_recording_snippets(
             str(eligibility.reason_text or "Snippet regeneration is unavailable."),
         )
 
-    pipeline_settings = PipelineSettings()
+    # Honor caller-supplied AppSettings overrides (especially the noise-detection
+    # knobs) so callers that disable detection or change the threshold via
+    # `settings=` actually see that take effect during repair, rather than
+    # silently reading process env vars via PipelineSettings().
+    pipeline_settings = PipelineSettings(
+        noise_detection_enabled=cfg.noise_detection_enabled,
+        noise_speech_ratio_threshold=cfg.noise_speech_ratio_threshold,
+        exclude_noise_speakers_from_transcript=cfg.exclude_noise_speakers_from_transcript,
+    )
     _LOG.info(
         "snippet repair start recording_id=%s origin=%s audio_source=%s artifact_state=%s",
         recording_id,
