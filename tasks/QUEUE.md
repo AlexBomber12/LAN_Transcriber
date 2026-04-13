@@ -754,3 +754,28 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-NOISE-SPEAKER-FILTER-01.md
 - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
+
+151) PR-LLM-INLINE-EXECUTION-01: Execute LLM calls inline in worker process instead of spawning child processes
+- Status: TODO
+- Tasks file: tasks/PR-LLM-INLINE-EXECUTION-01.md
+- Depends on: PR-NOISE-SPEAKER-FILTER-01
+
+152) PR-LLM-CLIENT-POOLING-01: Reuse httpx.AsyncClient across LLM requests with connection pooling
+- Status: TODO
+- Tasks file: tasks/PR-LLM-CLIENT-POOLING-01.md
+- Depends on: PR-LLM-INLINE-EXECUTION-01
+
+153) PR-SENTIMENT-OPTIMIZE-01: Cache sentiment pipeline or replace with LLM-derived friendly score
+- Status: TODO
+- Tasks file: tasks/PR-SENTIMENT-OPTIMIZE-01.md
+- Depends on: PR-NOISE-SPEAKER-FILTER-01
+
+154) PR-UI-LLM-ASYNC-01: Move LLM resummarize out of synchronous UI request into background job
+- Status: TODO
+- Tasks file: tasks/PR-UI-LLM-ASYNC-01.md
+- Depends on: PR-LLM-INLINE-EXECUTION-01
+
+155) PR-REUPLOAD-REPROCESS-01: Force full reprocess when re-uploading an existing audio file
+- Status: TODO
+- Tasks file: tasks/PR-REUPLOAD-REPROCESS-01.md
+- Depends on: PR-FORCE-REPROCESS-01
