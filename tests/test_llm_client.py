@@ -98,6 +98,88 @@ async def test_generate_payload_includes_max_tokens() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_chat_completion_reuses_shared_http_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_clients: list["_FakeClient"] = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            self.is_closed = False
+            self.calls: list[tuple[str, dict[str, Any], dict[str, str]]] = []
+            created_clients.append(self)
+
+        async def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, Any],
+            headers: dict[str, str],
+        ) -> _FakeResponse:
+            self.calls.append((url, json, headers))
+            return _FakeResponse()
+
+        async def aclose(self) -> None:
+            self.is_closed = True
+
+    await llm_client.LLMClient.close()
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", _FakeClient)
+    client = llm_client.LLMClient(base_url="http://example.test", timeout=0.1)
+
+    first = await client._post_chat_completion(
+        url="http://example.test/v1/chat/completions",
+        payload={"messages": [], "max_tokens": 111},
+        headers={"Authorization": "Bearer secret"},
+    )
+    second = await client._post_chat_completion(
+        url="http://example.test/v1/chat/completions",
+        payload={"messages": [], "max_tokens": 222},
+        headers={},
+    )
+
+    assert first["choices"][0]["message"]["content"] == "ok"
+    assert second["choices"][0]["message"]["content"] == "ok"
+    assert len(created_clients) == 1
+    assert created_clients[0].calls[0][1]["max_tokens"] == 111
+    assert created_clients[0].calls[1][1]["max_tokens"] == 222
+
+    await llm_client.LLMClient.close()
+    assert created_clients[0].is_closed is True
+    replacement = client._get_client()
+    assert len(created_clients) == 2
+    assert replacement is created_clients[1]
+    assert created_clients[1].kwargs["limits"] == httpx.Limits(
+        max_connections=5,
+        max_keepalive_connections=2,
+    )
+    await llm_client.LLMClient.close()
+
+
+@pytest.mark.asyncio
+async def test_close_tolerates_client_without_async_close() -> None:
+    class _ClientWithoutClose:
+        is_closed = False
+
+    llm_client.LLMClient._http_client = _ClientWithoutClose()  # noqa: SLF001
+    llm_client.LLMClient._http_client_factory = object()  # noqa: SLF001
+
+    await llm_client.LLMClient.close()
+
+    assert llm_client.LLMClient._http_client is None  # noqa: SLF001
+    assert llm_client.LLMClient._http_client_factory is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 @respx.mock
 async def test_generate_omits_model_when_not_configured() -> None:
     route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
@@ -663,3 +745,121 @@ async def test_generate_debug_log_uses_safe_request_metadata(caplog: pytest.LogC
     assert "response_format=True" in debug_messages
     assert "system-super-secret" not in debug_messages
     assert "user-ultra-secret" not in debug_messages
+
+
+def test_worker_main_closes_shared_http_client_on_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+    import types
+
+    monkeypatch.setitem(sys.modules, "redis", types.SimpleNamespace(Redis=type("Redis", (), {})))
+    monkeypatch.setitem(sys.modules, "rq", types.SimpleNamespace(Worker=type("Worker", (), {})))
+    worker_module = importlib.import_module("lan_app.worker")
+
+    calls: dict[str, object] = {}
+    settings = type(
+        "Settings",
+        (),
+        {
+            "redis_url": "redis://unit",
+            "rq_queue_name": "audio",
+            "rq_worker_burst": False,
+            "data_root": pathlib.Path("/tmp/worker-llm-close"),
+        },
+    )()
+
+    monkeypatch.setattr(worker_module, "AppSettings", lambda: settings)
+    monkeypatch.setattr(worker_module, "init_db", lambda cfg: calls.setdefault("init_db", cfg))
+    monkeypatch.setattr(worker_module, "write_worker_status", lambda *_args: None)
+    monkeypatch.setattr(worker_module, "start_heartbeat_thread", lambda *_args: (None, None))
+    monkeypatch.setattr(worker_module.Redis, "from_url", lambda _url: object())
+    monkeypatch.setattr(worker_module, "_install_signal_handlers", lambda _worker: None)
+
+    class _FakeWorker:
+        def __init__(self, queues, *, connection):
+            calls["queues"] = queues
+            calls["connection"] = connection
+
+        def work(self, *, with_scheduler, burst):
+            calls["work"] = (with_scheduler, burst)
+            raise RuntimeError("boom")
+
+    async def _fake_close(_cls) -> None:
+        calls["close_count"] = int(calls.get("close_count", 0)) + 1
+
+    original_asyncio_run = asyncio.run
+
+    def _run_coroutine(coro):
+        calls["asyncio_run_called"] = True
+        return original_asyncio_run(coro)
+
+    monkeypatch.setattr(worker_module, "Worker", _FakeWorker)
+    monkeypatch.setattr(worker_module.asyncio, "run", _run_coroutine)
+    monkeypatch.setattr(worker_module.LLMClient, "close", classmethod(_fake_close))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        worker_module.main()
+
+    assert calls["init_db"] is settings
+    assert calls["queues"] == ["audio"]
+    assert calls["work"] == (False, False)
+    assert calls["asyncio_run_called"] is True
+    assert calls["close_count"] == 1
+
+
+def test_worker_main_logs_close_failure_without_masking_worker_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+    import types
+
+    monkeypatch.setitem(sys.modules, "redis", types.SimpleNamespace(Redis=type("Redis", (), {})))
+    monkeypatch.setitem(sys.modules, "rq", types.SimpleNamespace(Worker=type("Worker", (), {})))
+    worker_module = importlib.import_module("lan_app.worker")
+
+    calls: dict[str, object] = {}
+    settings = type(
+        "Settings",
+        (),
+        {
+            "redis_url": "redis://unit",
+            "rq_queue_name": "audio",
+            "rq_worker_burst": False,
+            "data_root": pathlib.Path("/tmp/worker-llm-close-warning"),
+        },
+    )()
+
+    monkeypatch.setattr(worker_module, "AppSettings", lambda: settings)
+    monkeypatch.setattr(worker_module, "init_db", lambda *_args: None)
+    monkeypatch.setattr(worker_module, "write_worker_status", lambda *_args: None)
+    monkeypatch.setattr(worker_module, "start_heartbeat_thread", lambda *_args: (None, None))
+    monkeypatch.setattr(worker_module.Redis, "from_url", lambda _url: object())
+    monkeypatch.setattr(worker_module, "_install_signal_handlers", lambda _worker: None)
+    monkeypatch.setattr(
+        worker_module._logger,
+        "warning",
+        lambda message, **kwargs: calls.update({"warning": message, "warning_kwargs": kwargs}),
+    )
+
+    class _FakeWorker:
+        def __init__(self, queues, *, connection):
+            calls["queues"] = queues
+            calls["connection"] = connection
+
+        def work(self, *, with_scheduler, burst):
+            calls["work"] = (with_scheduler, burst)
+            raise RuntimeError("worker-boom")
+
+    def _run_coroutine(coro):
+        coro.close()
+        raise RuntimeError("close-boom")
+
+    monkeypatch.setattr(worker_module, "Worker", _FakeWorker)
+    monkeypatch.setattr(worker_module.asyncio, "run", _run_coroutine)
+
+    with pytest.raises(RuntimeError, match="worker-boom"):
+        worker_module.main()
+
+    assert calls["warning"] == "Failed to close shared LLM HTTP client"
+    assert calls["warning_kwargs"] == {"exc_info": True}

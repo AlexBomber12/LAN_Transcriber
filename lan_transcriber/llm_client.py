@@ -217,6 +217,9 @@ class LLMTruncatedResponseError(ValueError):
 class LLMClient:
     """Simple asynchronous client for the language model API."""
 
+    _http_client: httpx.AsyncClient | None = None
+    _http_client_factory: Any = None
+
     def __init__(
         self,
         base_url: str | None = None,
@@ -251,6 +254,34 @@ class LLMClient:
         configured_mock_path = mock_response_path or os.getenv("LLM_MOCK_RESPONSE_PATH")
         self.mock_response_path = Path(configured_mock_path) if configured_mock_path else None
 
+    @classmethod
+    def _get_client(cls) -> httpx.AsyncClient:
+        current_factory = httpx.AsyncClient
+        client = cls._http_client
+        client_closed = bool(getattr(client, "is_closed", False)) if client is not None else True
+        if (
+            client is None
+            or client_closed
+            or cls._http_client_factory is not current_factory
+        ):
+            cls._http_client = current_factory(
+                timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+                limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
+            )
+            cls._http_client_factory = current_factory
+        return cls._http_client
+
+    @classmethod
+    async def close(cls) -> None:
+        client = cls._http_client
+        cls._http_client = None
+        cls._http_client_factory = None
+        if client is None or bool(getattr(client, "is_closed", False)):
+            return
+        aclose = getattr(client, "aclose", None)
+        if callable(aclose):
+            await aclose()
+
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=8),
         stop=stop_after_attempt(3),
@@ -274,30 +305,30 @@ class LLMClient:
             attempt_number if attempt_number is not None else "unknown",
             payload.get("response_format") is not None,
         )
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            with anyio.fail_after(self.timeout):
-                resp = await client.post(url, json=payload, headers=headers)
-            try:
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                model_label = str(payload.get("model") or "<unset>")
-                message = (
-                    "LLM HTTP request failed "
-                    f"status_code={resp.status_code} "
-                    f"llm_url={url} "
-                    f"model={model_label} "
-                    f"max_tokens={payload.get('max_tokens')} "
-                    f"body={_error_body_snippet(resp)}"
-                )
-                raise httpx.HTTPStatusError(
-                    message,
-                    request=exc.request,
-                    response=exc.response,
-                ) from exc
-            data = resp.json()
-            if not isinstance(data, dict):
-                raise ValueError("LLM response must be a JSON object")
-            return data
+        client = self._get_client()
+        with anyio.fail_after(self.timeout):
+            resp = await client.post(url, json=payload, headers=headers)
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            model_label = str(payload.get("model") or "<unset>")
+            message = (
+                "LLM HTTP request failed "
+                f"status_code={resp.status_code} "
+                f"llm_url={url} "
+                f"model={model_label} "
+                f"max_tokens={payload.get('max_tokens')} "
+                f"body={_error_body_snippet(resp)}"
+            )
+            raise httpx.HTTPStatusError(
+                message,
+                request=exc.request,
+                response=exc.response,
+            ) from exc
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("LLM response must be a JSON object")
+        return data
 
     def _load_mock_message(self) -> Dict[str, str] | None:
         if self.mock_response_path is None:

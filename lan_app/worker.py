@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import signal
 from types import FrameType
@@ -9,6 +10,7 @@ from rq import Worker
 
 from .config import AppSettings
 from .db import init_db
+from lan_transcriber.llm_client import LLMClient
 from .worker_status import start_heartbeat_thread, write_worker_status
 
 _logger = logging.getLogger(__name__)
@@ -38,7 +40,13 @@ def main() -> None:
     connection = Redis.from_url(settings.redis_url)
     worker = Worker([settings.rq_queue_name], connection=connection)
     _install_signal_handlers(worker)
-    worker.work(with_scheduler=False, burst=settings.rq_worker_burst)
+    try:
+        worker.work(with_scheduler=False, burst=settings.rq_worker_burst)
+    finally:
+        try:
+            asyncio.run(LLMClient.close())
+        except Exception:
+            _logger.warning("Failed to close shared LLM HTTP client", exc_info=True)
 
 
 if __name__ == "__main__":
