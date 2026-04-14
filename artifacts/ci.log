@@ -104,8 +104,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15475 sha256=2a236b110b9f7c3c56889502bcaf305febefd86afb1588e72bb1789ba2b30296
-  Stored in directory: /tmp/pip-ephem-wheel-cache-xni9n0ss/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15475 sha256=0a802c85e8a5453c96fc9f9d87816e65d3f444384ca91793d0e25a39a322a360
+  Stored in directory: /tmp/pip-ephem-wheel-cache-tdtnfkk3/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -137,7 +137,7 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 85%]
 ........................................................................ [ 91%]
 ........................................................................ [ 96%]
-...........................................s                             [100%]
+.............................................                            [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -176,13 +176,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   15361      0   5136      0   100%
+TOTAL   15362      0   5138      0   100%
 
 67 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1338 passed, 3 skipped, 11 warnings in 134.01s (0:02:14)
+1340 passed, 2 skipped, 11 warnings in 142.98s (0:02:22)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -254,7 +254,7 @@ lan_app/ui_routes.py                2692      0   1024      0   100%
 lan_app/uploads.py                    79      0     14      0   100%
 lan_app/worker.py                     38      0      2      0   100%
 lan_app/worker_status.py              58      0      6      0   100%
-lan_app/worker_tasks.py             1852      0    534      0   100%
+lan_app/worker_tasks.py             1853      0    536      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                              10501      0   3454      0   100%
+TOTAL                              10502      0   3456      0   100%

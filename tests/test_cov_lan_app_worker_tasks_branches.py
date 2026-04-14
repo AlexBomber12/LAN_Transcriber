@@ -4142,7 +4142,7 @@ def test_process_job_resummarize_only_ignored_when_start_is_stale(
     assert ignored["status"] == "ignored"
 
 
-def test_process_job_resummarize_only_missing_recording_raises(
+def test_process_job_resummarize_only_missing_recording_fails_job(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -4154,14 +4154,32 @@ def test_process_job_resummarize_only_missing_recording_raises(
         lambda **_kwargs: True,
     )
     monkeypatch.setattr(worker_tasks, "get_recording", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        worker_tasks,
+        "fail_job_if_started",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "root_cause_from_exception",
+        lambda exc: SimpleNamespace(code="missing_recording", detail=str(exc)),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_failed",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("should not mark stage when recording is missing")
+        ),
+    )
 
-    with pytest.raises(ValueError, match="Recording not found"):
-        worker_tasks.process_job(
-            "job-rsum-missing",
-            "rec-rsum-missing",
-            JOB_TYPE_LLM,
-            resummarize_only=True,
-        )
+    result = worker_tasks.process_job(
+        "job-rsum-missing",
+        "rec-rsum-missing",
+        JOB_TYPE_LLM,
+        resummarize_only=True,
+    )
+
+    assert result["status"] == "failed"
 
 
 def test_process_job_resummarize_only_ignored_when_job_status_goes_stale(

@@ -4402,12 +4402,11 @@ def _process_resummarize_only_job(
     ):
         return _ignored_result(job_id, recording_id, JOB_TYPE_LLM)
 
-    if get_recording(recording_id, settings=settings) is None:
-        raise ValueError(f"Recording not found: {recording_id}")
-
     _append_step_log(log_path, f"started job={job_id} type={JOB_TYPE_LLM}")
     stage_metadata = {"operation": "resummarize_only"}
     try:
+        if get_recording(recording_id, settings=settings) is None:
+            raise ValueError(f"Recording not found: {recording_id}")
         _raise_if_stop_requested(
             recording_id=recording_id,
             settings=settings,
@@ -4490,14 +4489,15 @@ def _process_resummarize_only_job(
         }
     except Exception as exc:
         root_cause = root_cause_from_exception(exc)
-        mark_recording_pipeline_stage_failed(
-            recording_id,
-            stage_name="llm_extract",
-            error_code=root_cause.code,
-            error_text=root_cause.detail,
-            metadata=stage_metadata,
-            settings=settings,
-        )
+        if get_recording(recording_id, settings=settings) is not None:
+            mark_recording_pipeline_stage_failed(
+                recording_id,
+                stage_name="llm_extract",
+                error_code=root_cause.code,
+                error_text=root_cause.detail,
+                metadata=stage_metadata,
+                settings=settings,
+            )
         if not fail_job_if_started(job_id, str(exc), settings=settings):
             raise
         return {

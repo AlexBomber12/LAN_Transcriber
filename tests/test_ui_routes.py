@@ -4846,12 +4846,62 @@ def test_recording_detail_summary_polls_while_resummarize_job_is_active(
     page = c.get("/recordings/rec-rsum-ui-1?tab=summary")
     assert page.status_code == 200
     assert '/ui/recordings/rec-rsum-ui-1/body?tab=summary' in page.text
+    assert 'id="recording-inspector-body"' in page.text
+    assert 'hx-swap="outerHTML"' in page.text
     assert "Regenerating summary..." in page.text
 
     body = c.get("/ui/recordings/rec-rsum-ui-1/body?tab=diagnostics")
     assert body.status_code == 200
+    assert '/ui/recordings/rec-rsum-ui-1/body?tab=diagnostics' in body.text
     assert "Resummarize queued" not in body.text
     assert "Regenerating summary..." in body.text
+
+
+def test_recording_detail_body_stops_polling_after_resummarize_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-rsum-ui-stop-poll-1",
+        source="drive",
+        source_filename="summary.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-rsum-ui-stop-poll-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text(
+        json.dumps({"topic": "Old summary", "summary": "- old"}),
+        encoding="utf-8",
+    )
+    create_job(
+        "job-rsum-ui-stop-poll-1",
+        recording_id="rec-rsum-ui-stop-poll-1",
+        job_type=JOB_TYPE_LLM,
+        status=JOB_STATUS_STARTED,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    active_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
+    assert active_body.status_code == 200
+    assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' in active_body.text
+    assert 'hx-trigger="load, every 2s"' in active_body.text
+
+    monkeypatch.setattr(
+        ui_routes,
+        "list_jobs",
+        lambda **_kwargs: ([], 0),
+    )
+
+    settled_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
+    assert settled_body.status_code == 200
+    assert 'hx-trigger="load, every 2s"' not in settled_body.text
+    assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' not in settled_body.text
 
 
 def test_recording_detail_summary_shows_queued_resummarize_state(

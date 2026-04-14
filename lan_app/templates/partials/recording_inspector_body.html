@@ -1,13 +1,22 @@
-{% if current_tab == 'overview' %}
-  {% include "partials/recording_inspector_full_overview.html" %}
-{% elif current_tab == 'speakers' %}
-  {% include "partials/recording_inspector_full_speakers.html" %}
-{% elif current_tab == 'transcript' %}
-  {% include "partials/recording_inspector_full_transcript.html" %}
-{% elif current_tab == 'summary' %}
-  {% include "partials/recording_inspector_full_summary.html" %}
-{% elif current_tab == 'diagnostics' %}
-  {% include "partials/recording_inspector_full_diagnostics.html" %}
-{% elif current_tab == 'export' %}
-  {% include "partials/recording_inspector_full_export.html" %}
-{% endif %}
+<div
+  id="recording-inspector-body"
+  {% if recording_inspector.auto_refresh_body %}
+  hx-get="{{ recording_inspector.body_url }}"
+  hx-trigger="load, every 2s"
+  hx-swap="outerHTML"
+  {% endif %}
+>
+  {% if current_tab == 'overview' %}
+    {% include "partials/recording_inspector_full_overview.html" %}
+  {% elif current_tab == 'speakers' %}
+    {% include "partials/recording_inspector_full_speakers.html" %}
+  {% elif current_tab == 'transcript' %}
+    {% include "partials/recording_inspector_full_transcript.html" %}
+  {% elif current_tab == 'summary' %}
+    {% include "partials/recording_inspector_full_summary.html" %}
+  {% elif current_tab == 'diagnostics' %}
+    {% include "partials/recording_inspector_full_diagnostics.html" %}
+  {% elif current_tab == 'export' %}
+    {% include "partials/recording_inspector_full_export.html" %}
+  {% endif %}
+</div>
