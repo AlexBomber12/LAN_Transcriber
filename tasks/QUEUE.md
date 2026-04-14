@@ -761,7 +761,7 @@ Queue (in order)
 - Depends on: PR-NOISE-SPEAKER-FILTER-01
 
 152) PR-LLM-CLIENT-POOLING-01: Reuse httpx.AsyncClient across LLM requests with connection pooling
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-LLM-CLIENT-POOLING-01.md
 - Depends on: PR-LLM-INLINE-EXECUTION-01
 
