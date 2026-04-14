@@ -447,7 +447,10 @@ def _fallback_payload(
         topic = summary_bullets[0][:120] if summary_bullets else default_topic
     topic = topic or default_topic
 
-    tone_score = _normalise_tone_score(extracted.get("tone_score"), default=friendly)
+    tone_score_source = extracted.get("tone_score")
+    if tone_score_source in (None, ""):
+        tone_score_source = extracted.get("friendly")
+    tone_score = _normalise_tone_score(tone_score_source, default=friendly)
     emotional_lines = normalise_text_items(extracted.get("emotional_summary"), max_items=3)
     emotional_summary = "\n".join(emotional_lines) if emotional_lines else "Neutral and focused discussion."
 
@@ -514,6 +517,8 @@ def build_summary_payload(
         candidate["summary_bullets"] = normalise_text_items(candidate.get("summary"), max_items=12)
     if "topic" not in candidate:
         candidate["topic"] = default_topic
+    if candidate.get("tone_score") in (None, "") and candidate.get("friendly") not in (None, ""):
+        candidate["tone_score"] = candidate.get("friendly")
 
     try:
         validated = SummaryResponse.model_validate(candidate)

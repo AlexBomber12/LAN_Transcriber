@@ -129,3 +129,72 @@ def test_build_summary_payload_uses_friendly_fallback_when_tone_score_blank() ->
 
     assert payload["friendly"] == 41
     assert payload["tone_score"] == 41
+
+
+def test_build_summary_payload_uses_legacy_friendly_field_when_tone_score_missing() -> None:
+    payload = build_summary_payload(
+        raw_llm_content=json.dumps(
+            {
+                "topic": "Legacy",
+                "summary_bullets": ["Old provider shape"],
+                "decisions": [],
+                "action_items": [],
+                "friendly": 67,
+                "emotional_summary": "Positive.",
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        ),
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+
+    assert payload["friendly"] == 67
+    assert payload["tone_score"] == 67
+
+
+def test_build_summary_payload_parse_error_uses_legacy_friendly_field_when_tone_score_missing() -> None:
+    payload = build_summary_payload(
+        raw_llm_content=json.dumps(
+            {
+                "topic": "Legacy fallback",
+                "summary_bullets": 123,
+                "decisions": [],
+                "action_items": [],
+                "friendly": 58,
+                "emotional_summary": "Positive.",
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        ),
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+
+    assert payload["parse_error"] is True
+    assert payload["friendly"] == 58
+    assert payload["tone_score"] == 58
+
+
+def test_build_summary_payload_parse_error_prefers_tone_score_when_present() -> None:
+    payload = build_summary_payload(
+        raw_llm_content=json.dumps(
+            {
+                "topic": "Tone wins",
+                "summary_bullets": 123,
+                "decisions": [],
+                "action_items": [],
+                "friendly": 12,
+                "tone_score": 77,
+                "emotional_summary": "Positive.",
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        ),
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+
+    assert payload["parse_error"] is True
+    assert payload["friendly"] == 77
+    assert payload["tone_score"] == 77
