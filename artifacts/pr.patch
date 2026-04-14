@@ -1,71 +1,153 @@
-diff --git a/lan_app/snippet_repair.py b/lan_app/snippet_repair.py
-index 64a66a1..9337479 100644
---- a/lan_app/snippet_repair.py
-+++ b/lan_app/snippet_repair.py
-@@ -687,18 +687,22 @@ def repair_recording_snippets(
-         pipeline_settings=pipeline_settings,
-     )
-     _replace_staged_snippet_outputs(recording_id, staged_root, settings=cfg)
--    if pipeline_settings.noise_detection_enabled:
--        summary_source = noise_summary or {}
--        update_diarization_metadata_with_noise(
--            _derived_dir(recording_id, settings=cfg) / "diarization_metadata.json",
--            summary={
--                "noise_speakers": list(summary_source.get("noise_speakers") or []),
--                "speaker_metrics": dict(summary_source.get("speaker_metrics") or {}),
--                "threshold": summary_source.get(
--                    "threshold", pipeline_settings.noise_speech_ratio_threshold
--                ),
--            },
--        )
-+    summary_source = noise_summary or {}
-+    # Always refresh diarization_metadata noise fields so a repair leaves them
-+    # consistent with the repaired manifest. When detection is disabled we
-+    # write an explicit empty summary to wipe stale noise_speakers/metrics that
-+    # would otherwise persist from a prior detection-enabled run and bleed
-+    # into transcript-export filtering on resume paths.
-+    update_diarization_metadata_with_noise(
-+        _derived_dir(recording_id, settings=cfg) / "diarization_metadata.json",
-+        summary={
-+            "noise_speakers": list(summary_source.get("noise_speakers") or []),
-+            "speaker_metrics": dict(summary_source.get("speaker_metrics") or {}),
-+            "threshold": summary_source.get(
-+                "threshold", pipeline_settings.noise_speech_ratio_threshold
-+            ),
-+        },
-+    )
-     metadata = snippet_export_result_metadata(manifest)
-     result = SnippetRepairResult(
-         recording_id=recording_id,
-diff --git a/tests/test_snippet_repair.py b/tests/test_snippet_repair.py
-index 0efc533..0b96556 100644
---- a/tests/test_snippet_repair.py
-+++ b/tests/test_snippet_repair.py
-@@ -838,6 +838,17 @@ def test_repair_recording_snippets_skips_noise_detection_when_disabled(
-         lambda *_a, **_k: pytest.fail("noise detection should be disabled"),
-     )
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 470e5a4..17b9d48 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -573,6 +573,7 @@ def _rehydrate_child_operation_error(
+             "ReadError",
+             "RemoteProtocolError",
+             "ConnectionError",
++            "RequestError",
+         }:
+             return ConnectionError(message)
+         if error_type in {
+@@ -583,7 +584,11 @@ def _rehydrate_child_operation_error(
+             "TimeoutException",
+         }:
+             return TimeoutError(message)
+-        if error_type in {"LLMEmptyContentError", "LLMTruncatedResponseError"}:
++        if error_type in {
++            "LLMEmptyContentError",
++            "LLMTruncatedResponseError",
++            "HTTPStatusError",
++        }:
+             return RuntimeError(message)
+     builtins_ns = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
+     builtin_exc = builtins_ns.get(error_type)
+@@ -996,8 +1001,14 @@ class _CancelAwareLLMClient:
+         except asyncio.CancelledError:
+             await self._cancel_request_task(request_task)
+             raise
+-        except BaseException:
++        except BaseException as exc:
+             await self._cancel_request_task(request_task)
++            if isinstance(exc, Exception):
++                raise _rehydrate_child_operation_error(
++                    operation_name="llm_generate",
++                    error_type=type(exc).__name__,
++                    error_message=str(exc) or type(exc).__name__,
++                ) from exc
+             raise
  
-+    # Seed stale noise_speakers in diarization_metadata to simulate a prior
-+    # detection-enabled run; the disabled repair must clear them so resumes
-+    # don't continue applying old noise labels.
-+    metadata_path = (
-+        cfg.recordings_root / "rec-repair-no-noise" / "derived" / "diarization_metadata.json"
-+    )
-+    metadata_path.write_text(
-+        json.dumps({"degraded": False, "noise_speakers": ["STALE"]}),
-+        encoding="utf-8",
+     def generate(self, *args: Any, **kwargs: Any) -> Any:
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index 1999f77..ed31eae 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import asyncio
+ import builtins
++import httpx
+ import json
+ from pathlib import Path
+ import sqlite3
+@@ -1617,6 +1618,99 @@ def test_cancel_aware_llm_client_inline_runtime_error_propagates(tmp_path: Path)
+         )
+ 
+ 
++def test_cancel_aware_llm_client_normalizes_inline_connect_error(tmp_path: Path) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-inline-llm-7",
++        source="test",
++        source_filename="llm-connect.wav",
++        settings=cfg,
 +    )
 +
-     snippet_repair.repair_recording_snippets(
-         "rec-repair-no-noise",
-         settings=cfg,
-@@ -849,6 +860,9 @@ def test_repair_recording_snippets_skips_noise_detection_when_disabled(
-         )
-     )
-     assert "noise_speakers" not in manifest
-+    persisted_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-+    assert persisted_metadata["noise_speakers"] == []
-+    assert persisted_metadata["noise_speaker_metrics"] == {}
- 
- 
- def test_repair_recording_snippets_is_idempotent(tmp_path: Path) -> None:
++    class _ConnectErrorClient:
++        async def generate(self, *_args, **_kwargs):
++            request = httpx.Request("POST", "http://127.0.0.1:8000/v1/chat/completions")
++            raise httpx.ConnectError("connect boom", request=request)
++
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=_ConnectErrorClient(),
++        recording_id="rec-stop-inline-llm-7",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm-connect.log",
++    )
++
++    with pytest.raises(ConnectionError, match="connect boom"):
++        asyncio.run(
++            llm_client.generate(
++                system_prompt="sys",
++                user_prompt="user",
++            )
++        )
++
++
++def test_cancel_aware_llm_client_normalizes_inline_http_status_error(tmp_path: Path) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-inline-llm-8",
++        source="test",
++        source_filename="llm-status.wav",
++        settings=cfg,
++    )
++
++    class _HttpStatusErrorClient:
++        async def generate(self, *_args, **_kwargs):
++            request = httpx.Request("POST", "http://127.0.0.1:8000/v1/chat/completions")
++            response = httpx.Response(502, request=request)
++            raise httpx.HTTPStatusError("bad gateway", request=request, response=response)
++
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=_HttpStatusErrorClient(),
++        recording_id="rec-stop-inline-llm-8",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm-status.log",
++    )
++
++    with pytest.raises(RuntimeError, match="bad gateway"):
++        asyncio.run(
++            llm_client.generate(
++                system_prompt="sys",
++                user_prompt="user",
++            )
++        )
++
++
++def test_cancel_aware_llm_client_reraises_inline_baseexception(tmp_path: Path) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-inline-llm-9",
++        source="test",
++        source_filename="llm-baseexception.wav",
++        settings=cfg,
++    )
++
++    class _SentinelBaseException(BaseException):
++        pass
++
++    async def _raise_baseexception():
++        raise _SentinelBaseException("sentinel")
++
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=object(),
++        recording_id="rec-stop-inline-llm-9",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm-baseexception.log",
++    )
++
++    with pytest.raises(_SentinelBaseException, match="sentinel"):
++        asyncio.run(llm_client._await_inline_generate(_raise_baseexception()))  # noqa: SLF001
++
++
+ def test_execute_diarization_workflow_direct_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+     cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
+     annotation = object()
