@@ -219,6 +219,7 @@ class LLMClient:
 
     _http_client: httpx.AsyncClient | None = None
     _http_client_factory: Any = None
+    _http_client_timeout: float | None = None
 
     def __init__(
         self,
@@ -254,21 +255,28 @@ class LLMClient:
         configured_mock_path = mock_response_path or os.getenv("LLM_MOCK_RESPONSE_PATH")
         self.mock_response_path = Path(configured_mock_path) if configured_mock_path else None
 
-    @classmethod
-    def _get_client(cls) -> httpx.AsyncClient:
+    async def _get_client(self) -> httpx.AsyncClient:
+        cls = type(self)
         current_factory = httpx.AsyncClient
         client = cls._http_client
         client_closed = bool(getattr(client, "is_closed", False)) if client is not None else True
+        timeout_changed = cls._http_client_timeout != self.timeout
         if (
             client is None
             or client_closed
             or cls._http_client_factory is not current_factory
+            or timeout_changed
         ):
+            if client is not None and not client_closed:
+                aclose = getattr(client, "aclose", None)
+                if callable(aclose):
+                    await aclose()
             cls._http_client = current_factory(
-                timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+                timeout=httpx.Timeout(self.timeout),
                 limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
             )
             cls._http_client_factory = current_factory
+            cls._http_client_timeout = self.timeout
         return cls._http_client
 
     @classmethod
@@ -276,6 +284,7 @@ class LLMClient:
         client = cls._http_client
         cls._http_client = None
         cls._http_client_factory = None
+        cls._http_client_timeout = None
         if client is None or bool(getattr(client, "is_closed", False)):
             return
         aclose = getattr(client, "aclose", None)
@@ -305,7 +314,7 @@ class LLMClient:
             attempt_number if attempt_number is not None else "unknown",
             payload.get("response_format") is not None,
         )
-        client = self._get_client()
+        client = await self._get_client()
         with anyio.fail_after(self.timeout):
             resp = await client.post(url, json=payload, headers=headers)
         try:

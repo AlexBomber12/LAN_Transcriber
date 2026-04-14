@@ -152,10 +152,15 @@ async def test_post_chat_completion_reuses_shared_http_client(
     assert len(created_clients) == 1
     assert created_clients[0].calls[0][1]["max_tokens"] == 111
     assert created_clients[0].calls[1][1]["max_tokens"] == 222
+    timeout = created_clients[0].kwargs["timeout"]
+    assert timeout.connect == pytest.approx(0.1)
+    assert timeout.read == pytest.approx(0.1)
+    assert timeout.write == pytest.approx(0.1)
+    assert timeout.pool == pytest.approx(0.1)
 
     await llm_client.LLMClient.close()
     assert created_clients[0].is_closed is True
-    replacement = client._get_client()
+    replacement = await client._get_client()
     assert len(created_clients) == 2
     assert replacement is created_clients[1]
     assert created_clients[1].kwargs["limits"] == httpx.Limits(
@@ -172,11 +177,62 @@ async def test_close_tolerates_client_without_async_close() -> None:
 
     llm_client.LLMClient._http_client = _ClientWithoutClose()  # noqa: SLF001
     llm_client.LLMClient._http_client_factory = object()  # noqa: SLF001
+    llm_client.LLMClient._http_client_timeout = 5.0  # noqa: SLF001
 
     await llm_client.LLMClient.close()
 
     assert llm_client.LLMClient._http_client is None  # noqa: SLF001
     assert llm_client.LLMClient._http_client_factory is None  # noqa: SLF001
+    assert llm_client.LLMClient._http_client_timeout is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_post_chat_completion_recreates_shared_client_when_timeout_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_clients: list["_FakeClient"] = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            self.is_closed = False
+            created_clients.append(self)
+
+        async def post(self, *_args: Any, **_kwargs: Any) -> _FakeResponse:
+            return _FakeResponse()
+
+        async def aclose(self) -> None:
+            self.is_closed = True
+
+    await llm_client.LLMClient.close()
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", _FakeClient)
+    fast_client = llm_client.LLMClient(base_url="http://example.test", timeout=0.1)
+    slow_client = llm_client.LLMClient(base_url="http://example.test", timeout=321.0)
+
+    await fast_client._post_chat_completion(
+        url="http://example.test/v1/chat/completions",
+        payload={"messages": [], "max_tokens": 111},
+        headers={},
+    )
+    await slow_client._post_chat_completion(
+        url="http://example.test/v1/chat/completions",
+        payload={"messages": [], "max_tokens": 222},
+        headers={},
+    )
+
+    assert len(created_clients) == 2
+    assert created_clients[0].is_closed is True
+    assert created_clients[1].kwargs["timeout"].read == pytest.approx(321.0)
+    await llm_client.LLMClient.close()
 
 
 @pytest.mark.asyncio
@@ -773,7 +829,7 @@ def test_worker_main_closes_shared_http_client_on_shutdown(
     monkeypatch.setattr(worker_module, "init_db", lambda cfg: calls.setdefault("init_db", cfg))
     monkeypatch.setattr(worker_module, "write_worker_status", lambda *_args: None)
     monkeypatch.setattr(worker_module, "start_heartbeat_thread", lambda *_args: (None, None))
-    monkeypatch.setattr(worker_module.Redis, "from_url", lambda _url: object())
+    monkeypatch.setattr(worker_module.Redis, "from_url", lambda _url: object(), raising=False)
     monkeypatch.setattr(worker_module, "_install_signal_handlers", lambda _worker: None)
 
     class _FakeWorker:
@@ -834,7 +890,7 @@ def test_worker_main_logs_close_failure_without_masking_worker_error(
     monkeypatch.setattr(worker_module, "init_db", lambda *_args: None)
     monkeypatch.setattr(worker_module, "write_worker_status", lambda *_args: None)
     monkeypatch.setattr(worker_module, "start_heartbeat_thread", lambda *_args: (None, None))
-    monkeypatch.setattr(worker_module.Redis, "from_url", lambda _url: object())
+    monkeypatch.setattr(worker_module.Redis, "from_url", lambda _url: object(), raising=False)
     monkeypatch.setattr(worker_module, "_install_signal_handlers", lambda _worker: None)
     monkeypatch.setattr(
         worker_module._logger,
