@@ -935,15 +935,6 @@ class _CancelAwareLLMClient:
             parts.append(f"chunk_total={request_context.chunk_total}")
         return " ".join(parts)
 
-    def _request_timeout_seconds(self) -> float | None:
-        timeout_seconds = safe_float(
-            getattr(self._base_client, "timeout", None),
-            default=0.0,
-        )
-        if timeout_seconds <= 0:
-            return None
-        return timeout_seconds
-
     async def _cancel_request_task(self, task: asyncio.Future[Any]) -> None:
         if task.done():
             return
@@ -980,35 +971,18 @@ class _CancelAwareLLMClient:
 
     async def _await_inline_generate(self, awaitable: Any) -> Any:
         request_context = self._request_context
-        timeout_seconds = self._request_timeout_seconds()
         request_task = asyncio.ensure_future(awaitable)
-        deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
         log_suffix = self._request_context_log_suffix(request_context)
         start_perf = time.perf_counter()
-        start_message = f"llm request started {log_suffix}"
-        if timeout_seconds is not None:
-            start_message += f" timeout={timeout_seconds:g}s"
-        _append_step_log(self._log_path, start_message)
+        _append_step_log(self._log_path, f"llm request started {log_suffix}")
         try:
             while True:
                 self._raise_if_request_stop_requested(request_context=request_context)
-                wait_timeout = 0.1
-                if deadline is not None:
-                    remaining = max(deadline - time.monotonic(), 0.0)
-                    wait_timeout = min(wait_timeout, remaining)
-                try:
-                    result = await asyncio.wait_for(
-                        asyncio.shield(request_task),
-                        timeout=wait_timeout,
-                    )
-                    break
-                except asyncio.TimeoutError:
-                    if deadline is None:
-                        continue
-                    if time.monotonic() < deadline:
-                        continue
-                    await self._cancel_request_task(request_task)
-                    raise
+                done, _pending = await asyncio.wait({request_task}, timeout=0.1)
+                if not done:
+                    continue
+                result = await request_task
+                break
             self._raise_if_request_stop_requested(request_context=request_context)
             elapsed_seconds = time.perf_counter() - start_perf
             _append_step_log(
@@ -1018,9 +992,6 @@ class _CancelAwareLLMClient:
             return result
         except RecordingStopRequested:
             _append_step_log(self._log_path, f"llm request cancelled {log_suffix}")
-            raise
-        except asyncio.TimeoutError:
-            _append_step_log(self._log_path, f"llm request timed out {log_suffix}")
             raise
         except asyncio.CancelledError:
             await self._cancel_request_task(request_task)

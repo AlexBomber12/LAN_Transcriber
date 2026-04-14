@@ -1493,7 +1493,9 @@ def test_cancel_aware_llm_client_supports_positional_prompts_inline(
     assert captured["kwargs"]["model"] == "test-model"
 
 
-def test_cancel_aware_llm_client_times_out_inline_requests(tmp_path: Path) -> None:
+def test_cancel_aware_llm_client_does_not_impose_outer_timeout_from_base_client(
+    tmp_path: Path,
+) -> None:
     cfg = _db_settings(tmp_path)
     init_db(cfg)
     create_recording(
@@ -1506,15 +1508,9 @@ def test_cancel_aware_llm_client_times_out_inline_requests(tmp_path: Path) -> No
     class _SlowInlineClient:
         timeout = 0.05
 
-        def __init__(self) -> None:
-            self.cancelled = False
-
         async def generate(self, *_args, **_kwargs):
-            try:
-                await asyncio.Future()
-            except asyncio.CancelledError:
-                self.cancelled = True
-                raise
+            await asyncio.sleep(0.1)
+            return {"role": "assistant", "content": "ok"}
 
     slow_client = _SlowInlineClient()
     llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
@@ -1525,59 +1521,19 @@ def test_cancel_aware_llm_client_times_out_inline_requests(tmp_path: Path) -> No
         log_path=tmp_path / "logs" / "llm-timeout.log",
     )
 
-    with pytest.raises(asyncio.TimeoutError):
-        asyncio.run(
-            llm_client.generate(
-                system_prompt="sys",
-                user_prompt="user",
-            )
+    result = asyncio.run(
+        llm_client.generate(
+            system_prompt="sys",
+            user_prompt="user",
         )
+    )
 
-    assert slow_client.cancelled is True
-    assert "llm request timed out checkpoint=before_llm_request" in (
+    assert result == {"role": "assistant", "content": "ok"}
+    log_text = (
         tmp_path / "logs" / "llm-timeout.log"
     ).read_text(encoding="utf-8")
-
-
-def test_cancel_aware_llm_client_retries_poll_timeout_without_deadline(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = _db_settings(tmp_path)
-    init_db(cfg)
-    create_recording(
-        "rec-stop-inline-llm-3",
-        source="test",
-        source_filename="llm-poll.wav",
-        settings=cfg,
-    )
-
-    class _InlineClient:
-        timeout = None
-
-    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
-        base_client=_InlineClient(),
-        recording_id="rec-stop-inline-llm-3",
-        settings=cfg,
-        stage_name="llm_extract",
-        log_path=tmp_path / "logs" / "llm-poll.log",
-    )
-    original_wait_for = worker_tasks.asyncio.wait_for
-    wait_calls = {"count": 0}
-
-    async def _fake_wait_for(awaitable, timeout):
-        wait_calls["count"] += 1
-        if wait_calls["count"] == 1:
-            raise asyncio.TimeoutError
-        return await original_wait_for(awaitable, timeout=timeout)
-
-    async def _done() -> dict[str, str]:
-        return {"role": "assistant", "content": "ok"}
-
-    monkeypatch.setattr(worker_tasks.asyncio, "wait_for", _fake_wait_for)
-    result = asyncio.run(llm_client._await_inline_generate(_done()))  # noqa: SLF001
-    assert result == {"role": "assistant", "content": "ok"}
-    assert wait_calls["count"] == 2
+    assert "llm request started checkpoint=before_llm_request" in log_text
+    assert "llm request completed checkpoint=before_llm_request" in log_text
 
 
 def test_cancel_aware_llm_client_inline_cancelled_error_cleans_request_task(tmp_path: Path) -> None:
