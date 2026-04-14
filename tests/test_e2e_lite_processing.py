@@ -60,6 +60,7 @@ class _FakeLLM:
             "summary_bullets": ["Pipeline completed with deterministic mocked components."],
             "decisions": [],
             "action_items": [],
+            "tone_score": 68,
             "emotional_summary": "Neutral.",
             "questions": {
                 "total_count": 0,
@@ -120,7 +121,6 @@ async def test_e2e_lite_processing_success(tmp_path: Path, monkeypatch: pytest.M
         )
 
     monkeypatch.setattr(pipeline, "_whisperx_asr", _fake_asr)
-    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 68)
 
     progress_events: list[tuple[str, float]] = []
     result = await asyncio.wait_for(
@@ -196,8 +196,6 @@ async def test_e2e_lite_processing_failure_writes_failure_artifacts(
         "_whisperx_asr",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("mocked asr failure")),
     )
-    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
-
     with pytest.raises(RuntimeError, match="mocked asr failure"):
         await asyncio.wait_for(
             pipeline.run_pipeline(

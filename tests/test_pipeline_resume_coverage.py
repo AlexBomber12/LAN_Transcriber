@@ -2259,9 +2259,6 @@ def test_stage_llm_extract_filters_noise_speakers_from_summary_inputs(
     monkeypatch.setattr(worker_tasks, "LLMClient", lambda: object())
     monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _p: {})
     monkeypatch.setattr(
-        worker_tasks.pipeline_orchestrator, "_sentiment_score", lambda _text: 3
-    )
-    monkeypatch.setattr(
         worker_tasks.pipeline_orchestrator, "_use_chunked_llm", lambda *_a, **_k: False
     )
     monkeypatch.setattr(
@@ -2413,9 +2410,6 @@ def test_stage_llm_extract_preserves_inputs_when_noise_labels_stale(
     monkeypatch.setattr(worker_tasks, "LLMClient", lambda: object())
     monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _p: {})
     monkeypatch.setattr(
-        worker_tasks.pipeline_orchestrator, "_sentiment_score", lambda _t: 3
-    )
-    monkeypatch.setattr(
         worker_tasks.pipeline_orchestrator, "_use_chunked_llm", lambda *_a, **_k: False
     )
     monkeypatch.setattr(
@@ -2504,9 +2498,6 @@ def test_stage_llm_extract_skips_filter_when_noise_metadata_unusable(
     monkeypatch.setattr(worker_tasks, "LLMClient", lambda: object())
     monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _p: {})
     monkeypatch.setattr(
-        worker_tasks.pipeline_orchestrator, "_sentiment_score", lambda _text: 3
-    )
-    monkeypatch.setattr(
         worker_tasks.pipeline_orchestrator, "_use_chunked_llm", lambda *_a, **_k: False
     )
     monkeypatch.setattr(
@@ -2563,7 +2554,6 @@ def test_stage_llm_extract_chunked_summary_invokes_progress_callback(
     monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_require_llm_model", lambda _model: "test-model")
     monkeypatch.setattr(worker_tasks, "LLMClient", lambda: object())
     monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _path: {})
-    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_sentiment_score", lambda _text: 3)
     monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_speaker_turn_prompt_text", lambda *_a, **_k: "Prompt text")
     monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_use_chunked_llm", lambda *_a, **_k: True)
     monkeypatch.setattr(
@@ -2816,7 +2806,6 @@ def test_stage_llm_extract_stop_after_current_chunk_marks_completed_chunk_only(
     )
     monkeypatch.setattr(worker_tasks, "_load_calendar_summary_context", lambda *_a, **_k: ("Weekly Sync", ["Ada"]))
     monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_require_llm_model", lambda _model: "test-model")
-    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_sentiment_score", lambda _text: 3)
     monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_speaker_turn_prompt_text", lambda *_a, **_k: "Prompt text")
     monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_use_chunked_llm", lambda *_a, **_k: True)
     monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _path: {})

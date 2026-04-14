@@ -3378,7 +3378,6 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
             )
             if not summary_speaker_turns or not summary_text:
                 return _build_skip_result("no_speech")
-    ctx.friendly = pipeline_orchestrator._sentiment_score(summary_text or ctx.clean_text)
     llm_prompt_text = pipeline_orchestrator._speaker_turn_prompt_text(
         summary_speaker_turns,
         aliases=aliases,
@@ -3410,7 +3409,6 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
                 cfg=ctx.pipeline_settings,
                 llm_model=llm_model,
                 target_summary_language=summary_lang,
-                friendly=ctx.friendly,
                 default_topic=ctx.calendar_title or "Meeting summary",
                 calendar_title=ctx.calendar_title,
                 calendar_attendees=ctx.calendar_attendees,
@@ -3455,10 +3453,10 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
             raw_llm_content=str(msg.get("content") or ""),
             model=llm_model,
             target_summary_language=summary_lang,
-            friendly=ctx.friendly,
             default_topic=ctx.calendar_title or "Meeting summary",
             derived_dir=ctx.artifacts.derived_dir,
         )
+    ctx.friendly = int((ctx.summary_payload or {}).get("friendly") or 0)
     atomic_write_json(
         ctx.artifacts.recording_artifacts.summary_json_path,
         ctx.summary_payload,

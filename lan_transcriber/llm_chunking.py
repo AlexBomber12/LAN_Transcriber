@@ -844,7 +844,8 @@ def build_merge_prompt(
     language_name = _language_name(target_summary_language)
     sys_prompt = (
         "You merge structured extracts from multiple overlapping transcript chunks into one final meeting summary. "
-        f"Write topic, summary_bullets, decisions, action_items, emotional_summary, and questions in {language_name}. "
+        f"Write topic, summary_bullets, decisions, action_items, tone_score, emotional_summary, and questions in {language_name}. "
+        "tone_score must be an integer from 0 to 100, where 100 means very positive and friendly. "
         "Deduplicate repeated content caused by overlapping chunks and reconcile conflicts conservatively. "
         "Return strict JSON only, with no markdown fences."
     )
@@ -868,6 +869,7 @@ def build_merge_prompt(
                     "confidence": "number [0,1]",
                 }
             ],
+            "tone_score": "integer [0,100], where 100 = very positive/friendly",
             "emotional_summary": "1-3 short lines as a string",
             "questions": {
                 "total_count": "integer >= 0",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Sequence
@@ -17,6 +18,8 @@ _QUESTION_TYPE_KEYS = (
     "status",
     "decision_seeking",
 )
+
+_NEUTRAL_TONE_SCORE = 50
 
 _LANGUAGE_NAME_MAP: dict[str, str] = {
     "ar": "Arabic",
@@ -111,6 +114,7 @@ class SummaryResponse(BaseModel):
     summary_bullets: list[str]
     decisions: list[str] = Field(default_factory=list)
     action_items: list[ActionItem] = Field(default_factory=list)
+    tone_score: int | None = None
     emotional_summary: str
     questions: Question = Field(default_factory=Question)
 
@@ -132,6 +136,13 @@ class SummaryResponse(BaseModel):
     def _clean_decisions(cls, value: Any) -> list[str]:
         return normalise_text_items(value, max_items=20)
 
+    @field_validator("tone_score", mode="before")
+    @classmethod
+    def _clean_tone_score(cls, value: Any) -> int | None:
+        if _tone_score_missing(value):
+            return None
+        return _normalise_tone_score(value)
+
     @field_validator("emotional_summary", mode="before")
     @classmethod
     def _clean_emotional_summary(cls, value: Any) -> str:
@@ -147,6 +158,38 @@ class SummaryResponse(BaseModel):
 
 def _language_name(code: str) -> str:
     return _LANGUAGE_NAME_MAP.get(code, code.upper())
+
+
+def _normalise_tone_score(value: Any, *, default: Any = _NEUTRAL_TONE_SCORE) -> int:
+    parsed = _parse_tone_score(value)
+    if parsed is not None:
+        return parsed
+    fallback = _parse_tone_score(default)
+    if fallback is None:
+        fallback = _NEUTRAL_TONE_SCORE
+    return fallback
+
+
+def _tone_score_missing(value: Any) -> bool:
+    return _parse_tone_score(value) is None
+
+
+def _parse_tone_score(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return min(max(int(round(parsed)), 0), 100)
 
 
 def _chunk_text_for_prompt(text: str, *, max_chars: int = 500) -> list[str]:
@@ -222,7 +265,8 @@ def build_structured_summary_prompts(
     language_name = _language_name(target_summary_language)
     sys_prompt = (
         "You are an assistant that summarizes meeting transcripts. "
-        f"Write topic, summary_bullets, decisions, action_items, emotional_summary, and questions in {language_name}. "
+        f"Write topic, summary_bullets, decisions, action_items, tone_score, emotional_summary, and questions in {language_name}. "
+        "tone_score must be an integer from 0 to 100, where 100 means very positive and friendly. "
         "Keep names, quotes, and domain terms in their original language when needed. "
         "Return strict JSON only, with no markdown fences."
     )
@@ -245,6 +289,7 @@ def build_structured_summary_prompts(
                     "confidence": "number [0,1]",
                 }
             ],
+            "tone_score": "integer [0,100], where 100 = very positive/friendly",
             "emotional_summary": "1-3 short lines as a string",
             "questions": {
                 "total_count": "integer >= 0",
@@ -367,6 +412,7 @@ def _build_structured_summary_payload(
     model: str,
     target_summary_language: str,
     friendly: int,
+    tone_score: int | None = None,
     topic: str,
     summary_bullets: Sequence[str],
     decisions: Sequence[str],
@@ -379,8 +425,12 @@ def _build_structured_summary_payload(
     parse_error: bool = False,
     parse_error_reason: str | None = None,
 ) -> dict[str, Any]:
+    resolved_tone_score = _normalise_tone_score(
+        friendly if tone_score is None else tone_score,
+        default=friendly,
+    )
     payload: dict[str, Any] = {
-        "friendly": int(friendly),
+        "friendly": resolved_tone_score,
         "model": model,
         "target_summary_language": target_summary_language,
         "topic": topic,
@@ -388,6 +438,7 @@ def _build_structured_summary_payload(
         "summary": _summary_text_from_bullets(summary_bullets),
         "decisions": list(decisions),
         "action_items": list(action_items),
+        "tone_score": resolved_tone_score,
         "emotional_summary": emotional_summary,
         "questions": questions,
     }
@@ -409,7 +460,7 @@ def _fallback_payload(
     extracted: dict[str, Any],
     model: str,
     target_summary_language: str,
-    friendly: int,
+    friendly: int | None,
     default_topic: str,
     parse_error_reason: str,
 ) -> dict[str, Any]:
@@ -426,13 +477,18 @@ def _fallback_payload(
         topic = summary_bullets[0][:120] if summary_bullets else default_topic
     topic = topic or default_topic
 
+    tone_score_source = extracted.get("tone_score")
+    if _tone_score_missing(tone_score_source):
+        tone_score_source = extracted.get("friendly")
+    tone_score = _normalise_tone_score(tone_score_source, default=friendly)
     emotional_lines = normalise_text_items(extracted.get("emotional_summary"), max_items=3)
     emotional_summary = "\n".join(emotional_lines) if emotional_lines else "Neutral and focused discussion."
 
     return _build_structured_summary_payload(
         model=model,
         target_summary_language=target_summary_language,
-        friendly=friendly,
+        friendly=tone_score,
+        tone_score=tone_score,
         topic=topic,
         summary_bullets=summary_bullets,
         decisions=normalise_text_items(extracted.get("decisions"), max_items=20),
@@ -459,7 +515,7 @@ def build_summary_payload(
     raw_llm_content: str,
     model: str,
     target_summary_language: str,
-    friendly: int,
+    friendly: int | None = None,
     default_topic: str = "Meeting summary",
     derived_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -491,6 +547,8 @@ def build_summary_payload(
         candidate["summary_bullets"] = normalise_text_items(candidate.get("summary"), max_items=12)
     if "topic" not in candidate:
         candidate["topic"] = default_topic
+    if _tone_score_missing(candidate.get("tone_score")) and not _tone_score_missing(candidate.get("friendly")):
+        candidate["tone_score"] = candidate.get("friendly")
 
     try:
         validated = SummaryResponse.model_validate(candidate)
@@ -521,7 +579,8 @@ def build_summary_payload(
     return _build_structured_summary_payload(
         model=model,
         target_summary_language=target_summary_language,
-        friendly=friendly,
+        friendly=_normalise_tone_score(validated.tone_score, default=friendly),
+        tone_score=validated.tone_score,
         topic=validated.topic or default_topic,
         summary_bullets=validated.summary_bullets,
         decisions=validated.decisions,

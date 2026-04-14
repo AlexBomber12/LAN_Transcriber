@@ -766,7 +766,7 @@ Queue (in order)
 - Depends on: PR-LLM-INLINE-EXECUTION-01
 
 153) PR-SENTIMENT-OPTIMIZE-01: Cache sentiment pipeline or replace with LLM-derived friendly score
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SENTIMENT-OPTIMIZE-01.md
 - Depends on: PR-NOISE-SPEAKER-FILTER-01
 

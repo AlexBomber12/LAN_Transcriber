@@ -452,6 +452,8 @@ def test_merge_chunk_results_and_build_merge_prompt_dedupe_inputs() -> None:
     prompt_payload = json.loads(user_prompt)
 
     assert "overlapping transcript chunks" in system_prompt
+    assert "tone_score" in system_prompt
     assert prompt_payload["calendar"]["title"] == "Roadmap Review"
     assert prompt_payload["merge_input"]["chunk_count"] == 2
     assert "overlap" in prompt_payload["overlap_warning"].lower()
+    assert prompt_payload["required_schema"]["tone_score"] == "integer [0,100], where 100 = very positive/friendly"

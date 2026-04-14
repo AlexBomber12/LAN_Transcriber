@@ -1970,6 +1970,7 @@ def test_build_structured_summary_prompts_keeps_turns_beyond_legacy_cap():
     turns = payload["speaker_turns"]
     assert len(turns) == len(speaker_turns)
     assert turns[-1]["text"] == "turn 349"
+    assert payload["required_schema"]["tone_score"] == "integer [0,100], where 100 = very positive/friendly"
 
 
 @pytest.mark.asyncio
@@ -1980,10 +1981,6 @@ async def test_pipeline_writes_structured_summary_payload(tmp_path: Path, mocker
             [{"start": 0.0, "end": 1.0, "text": "hello team, we ship on Friday."}],
             {"language": "en", "language_probability": 0.9},
         ),
-    )
-    mocker.patch(
-        "transformers.pipeline",
-        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
     )
 
     async def _fake_generate(
@@ -2007,6 +2004,7 @@ async def test_pipeline_writes_structured_summary_payload(tmp_path: Path, mocker
                             "confidence": 0.92,
                         }
                     ],
+                    "tone_score": 74,
                     "emotional_summary": "Focused and optimistic.",
                     "questions": {
                         "total_count": 1,
@@ -2048,6 +2046,8 @@ async def test_pipeline_writes_structured_summary_payload(tmp_path: Path, mocker
     assert summary_data["decisions"] == ["Release window is Friday 16:00 UTC."]
     assert summary_data["action_items"][0]["owner"] == "Alex"
     assert summary_data["action_items"][0]["confidence"] == 0.92
+    assert summary_data["tone_score"] == 74
+    assert summary_data["friendly"] == 74
     assert summary_data["questions"]["types"]["status"] == 1
     assert summary_data["summary_bullets"] == ["Team confirmed release scope for Friday."]
 
