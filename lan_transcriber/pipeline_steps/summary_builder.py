@@ -172,6 +172,8 @@ def _tone_score_missing(value: Any) -> bool:
 def _parse_tone_score(value: Any) -> int | None:
     if value is None:
         return None
+    if isinstance(value, bool):
+        return None
     if isinstance(value, str):
         value = value.strip()
         if not value:
