@@ -153,6 +153,52 @@ def test_build_summary_payload_uses_friendly_fallback_when_tone_score_whitespace
     assert payload["tone_score"] == 44
 
 
+def test_build_summary_payload_uses_friendly_fallback_when_tone_score_non_numeric() -> None:
+    payload = build_summary_payload(
+        raw_llm_content=json.dumps(
+            {
+                "topic": "Fallback",
+                "summary_bullets": ["Still valid"],
+                "decisions": [],
+                "action_items": [],
+                "tone_score": "N/A",
+                "friendly": 46,
+                "emotional_summary": "Neutral.",
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        ),
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+
+    assert payload["friendly"] == 46
+    assert payload["tone_score"] == 46
+
+
+def test_build_summary_payload_uses_friendly_fallback_when_tone_score_non_finite() -> None:
+    payload = build_summary_payload(
+        raw_llm_content=json.dumps(
+            {
+                "topic": "Fallback",
+                "summary_bullets": ["Still valid"],
+                "decisions": [],
+                "action_items": [],
+                "tone_score": "inf",
+                "friendly": 47,
+                "emotional_summary": "Neutral.",
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        ),
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+
+    assert payload["friendly"] == 47
+    assert payload["tone_score"] == 47
+
+
 def test_build_summary_payload_uses_legacy_friendly_field_when_tone_score_missing() -> None:
     payload = build_summary_payload(
         raw_llm_content=json.dumps(
@@ -220,6 +266,30 @@ def test_build_summary_payload_parse_error_uses_legacy_friendly_field_when_tone_
     assert payload["parse_error"] is True
     assert payload["friendly"] == 61
     assert payload["tone_score"] == 61
+
+
+def test_build_summary_payload_parse_error_uses_legacy_friendly_field_when_tone_score_non_numeric() -> None:
+    payload = build_summary_payload(
+        raw_llm_content=json.dumps(
+            {
+                "topic": "Legacy fallback",
+                "summary_bullets": 123,
+                "decisions": [],
+                "action_items": [],
+                "friendly": 63,
+                "tone_score": "N/A",
+                "emotional_summary": "Positive.",
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        ),
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+
+    assert payload["parse_error"] is True
+    assert payload["friendly"] == 63
+    assert payload["tone_score"] == 63
 
 
 def test_build_summary_payload_parse_error_prefers_tone_score_when_present() -> None:

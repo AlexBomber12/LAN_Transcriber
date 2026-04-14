@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Sequence
@@ -158,14 +159,30 @@ def _language_name(code: str) -> str:
 
 
 def _normalise_tone_score(value: Any, *, default: int = 0) -> int:
-    score = int(round(safe_float(value, default=default)))
-    return min(max(score, 0), 100)
+    parsed = _parse_tone_score(value)
+    if parsed is not None:
+        return parsed
+    return min(max(default, 0), 100)
 
 
 def _tone_score_missing(value: Any) -> bool:
+    return _parse_tone_score(value) is None
+
+
+def _parse_tone_score(value: Any) -> int | None:
     if value is None:
-        return True
-    return isinstance(value, str) and not value.strip()
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return min(max(int(round(parsed)), 0), 100)
 
 
 def _chunk_text_for_prompt(text: str, *, max_chars: int = 500) -> list[str]:

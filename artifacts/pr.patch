@@ -1,56 +1,59 @@
 diff --git a/lan_transcriber/pipeline_steps/summary_builder.py b/lan_transcriber/pipeline_steps/summary_builder.py
-index 59d717b..00c5a23 100644
+index 00c5a23..5506a47 100644
 --- a/lan_transcriber/pipeline_steps/summary_builder.py
 +++ b/lan_transcriber/pipeline_steps/summary_builder.py
-@@ -136,7 +136,7 @@ class SummaryResponse(BaseModel):
-     @field_validator("tone_score", mode="before")
-     @classmethod
-     def _clean_tone_score(cls, value: Any) -> int | None:
--        if value is None or value == "":
-+        if _tone_score_missing(value):
-             return None
-         return _normalise_tone_score(value)
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
  
-@@ -162,6 +162,12 @@ def _normalise_tone_score(value: Any, *, default: int = 0) -> int:
-     return min(max(score, 0), 100)
+ import json
++import math
+ import re
+ from pathlib import Path
+ from typing import Any, Sequence
+@@ -158,14 +159,30 @@ def _language_name(code: str) -> str:
  
  
-+def _tone_score_missing(value: Any) -> bool:
-+    if value is None:
-+        return True
-+    return isinstance(value, str) and not value.strip()
+ def _normalise_tone_score(value: Any, *, default: int = 0) -> int:
+-    score = int(round(safe_float(value, default=default)))
+-    return min(max(score, 0), 100)
++    parsed = _parse_tone_score(value)
++    if parsed is not None:
++        return parsed
++    return min(max(default, 0), 100)
+ 
+ 
+ def _tone_score_missing(value: Any) -> bool:
++    return _parse_tone_score(value) is None
 +
 +
++def _parse_tone_score(value: Any) -> int | None:
+     if value is None:
+-        return True
+-    return isinstance(value, str) and not value.strip()
++        return None
++    if isinstance(value, str):
++        value = value.strip()
++        if not value:
++            return None
++    try:
++        parsed = float(value)
++    except (TypeError, ValueError):
++        return None
++    if not math.isfinite(parsed):
++        return None
++    return min(max(int(round(parsed)), 0), 100)
+ 
+ 
  def _chunk_text_for_prompt(text: str, *, max_chars: int = 500) -> list[str]:
-     normalized = " ".join(text.split())
-     if not normalized:
-@@ -448,7 +454,7 @@ def _fallback_payload(
-     topic = topic or default_topic
- 
-     tone_score_source = extracted.get("tone_score")
--    if tone_score_source in (None, ""):
-+    if _tone_score_missing(tone_score_source):
-         tone_score_source = extracted.get("friendly")
-     tone_score = _normalise_tone_score(tone_score_source, default=friendly)
-     emotional_lines = normalise_text_items(extracted.get("emotional_summary"), max_items=3)
-@@ -517,7 +523,7 @@ def build_summary_payload(
-         candidate["summary_bullets"] = normalise_text_items(candidate.get("summary"), max_items=12)
-     if "topic" not in candidate:
-         candidate["topic"] = default_topic
--    if candidate.get("tone_score") in (None, "") and candidate.get("friendly") not in (None, ""):
-+    if _tone_score_missing(candidate.get("tone_score")) and not _tone_score_missing(candidate.get("friendly")):
-         candidate["tone_score"] = candidate.get("friendly")
- 
-     try:
 diff --git a/tests/test_pipeline_steps_summary_builder.py b/tests/test_pipeline_steps_summary_builder.py
-index 1f5b78c..02dbfad 100644
+index 02dbfad..504e8a5 100644
 --- a/tests/test_pipeline_steps_summary_builder.py
 +++ b/tests/test_pipeline_steps_summary_builder.py
-@@ -131,6 +131,28 @@ def test_build_summary_payload_uses_friendly_fallback_when_tone_score_blank() ->
-     assert payload["tone_score"] == 41
+@@ -153,6 +153,52 @@ def test_build_summary_payload_uses_friendly_fallback_when_tone_score_whitespace
+     assert payload["tone_score"] == 44
  
  
-+def test_build_summary_payload_uses_friendly_fallback_when_tone_score_whitespace() -> None:
++def test_build_summary_payload_uses_friendly_fallback_when_tone_score_non_numeric() -> None:
 +    payload = build_summary_payload(
 +        raw_llm_content=json.dumps(
 +            {
@@ -58,28 +61,52 @@ index 1f5b78c..02dbfad 100644
 +                "summary_bullets": ["Still valid"],
 +                "decisions": [],
 +                "action_items": [],
-+                "tone_score": "   ",
++                "tone_score": "N/A",
++                "friendly": 46,
 +                "emotional_summary": "Neutral.",
 +                "questions": {"total_count": 0, "types": {}, "extracted": []},
 +            }
 +        ),
 +        model="m",
 +        target_summary_language="en",
-+        friendly=44,
++        friendly=0,
 +    )
 +
-+    assert payload["friendly"] == 44
-+    assert payload["tone_score"] == 44
++    assert payload["friendly"] == 46
++    assert payload["tone_score"] == 46
++
++
++def test_build_summary_payload_uses_friendly_fallback_when_tone_score_non_finite() -> None:
++    payload = build_summary_payload(
++        raw_llm_content=json.dumps(
++            {
++                "topic": "Fallback",
++                "summary_bullets": ["Still valid"],
++                "decisions": [],
++                "action_items": [],
++                "tone_score": "inf",
++                "friendly": 47,
++                "emotional_summary": "Neutral.",
++                "questions": {"total_count": 0, "types": {}, "extracted": []},
++            }
++        ),
++        model="m",
++        target_summary_language="en",
++        friendly=0,
++    )
++
++    assert payload["friendly"] == 47
++    assert payload["tone_score"] == 47
 +
 +
  def test_build_summary_payload_uses_legacy_friendly_field_when_tone_score_missing() -> None:
      payload = build_summary_payload(
          raw_llm_content=json.dumps(
-@@ -176,6 +198,30 @@ def test_build_summary_payload_parse_error_uses_legacy_friendly_field_when_tone_
-     assert payload["tone_score"] == 58
+@@ -222,6 +268,30 @@ def test_build_summary_payload_parse_error_uses_legacy_friendly_field_when_tone_
+     assert payload["tone_score"] == 61
  
  
-+def test_build_summary_payload_parse_error_uses_legacy_friendly_field_when_tone_score_whitespace() -> None:
++def test_build_summary_payload_parse_error_uses_legacy_friendly_field_when_tone_score_non_numeric() -> None:
 +    payload = build_summary_payload(
 +        raw_llm_content=json.dumps(
 +            {
@@ -87,8 +114,8 @@ index 1f5b78c..02dbfad 100644
 +                "summary_bullets": 123,
 +                "decisions": [],
 +                "action_items": [],
-+                "friendly": 61,
-+                "tone_score": " \t ",
++                "friendly": 63,
++                "tone_score": "N/A",
 +                "emotional_summary": "Positive.",
 +                "questions": {"total_count": 0, "types": {}, "extracted": []},
 +            }
@@ -99,8 +126,8 @@ index 1f5b78c..02dbfad 100644
 +    )
 +
 +    assert payload["parse_error"] is True
-+    assert payload["friendly"] == 61
-+    assert payload["tone_score"] == 61
++    assert payload["friendly"] == 63
++    assert payload["tone_score"] == 63
 +
 +
  def test_build_summary_payload_parse_error_prefers_tone_score_when_present() -> None:
