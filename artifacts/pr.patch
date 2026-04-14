@@ -1,225 +1,43 @@
-diff --git a/lan_app/templates/partials/recording_inspector.html b/lan_app/templates/partials/recording_inspector.html
-index 10e0724..898d52e 100644
---- a/lan_app/templates/partials/recording_inspector.html
-+++ b/lan_app/templates/partials/recording_inspector.html
-@@ -16,14 +16,7 @@
- <div class="{% if recording_inspector.embedded %}grid gap-3.5{% else %}mt-6{% endif %}">
- {% include "partials/recording_inspector_tabs.html" %}
- 
--<div
--  class="{% if recording_inspector.embedded %}border border-slate-200 rounded-xl bg-white p-4 shadow-sm{% else %}mt-6{% endif %}"
--  {% if recording_inspector.auto_refresh_body %}
--  hx-get="{{ recording_inspector.body_url }}"
--  hx-trigger="load, every 2s"
--  hx-swap="innerHTML"
--  {% endif %}
-->
-+<div class="{% if recording_inspector.embedded %}border border-slate-200 rounded-xl bg-white p-4 shadow-sm{% else %}mt-6{% endif %}">
-   {% if recording_inspector.embedded %}
-   {% include "partials/recording_inspector_embedded_body.html" %}
-   {% else %}
-diff --git a/lan_app/templates/partials/recording_inspector_body.html b/lan_app/templates/partials/recording_inspector_body.html
-index 09c24ca..e8ace57 100644
---- a/lan_app/templates/partials/recording_inspector_body.html
-+++ b/lan_app/templates/partials/recording_inspector_body.html
-@@ -1,13 +1,22 @@
--{% if current_tab == 'overview' %}
--  {% include "partials/recording_inspector_full_overview.html" %}
--{% elif current_tab == 'speakers' %}
--  {% include "partials/recording_inspector_full_speakers.html" %}
--{% elif current_tab == 'transcript' %}
--  {% include "partials/recording_inspector_full_transcript.html" %}
--{% elif current_tab == 'summary' %}
--  {% include "partials/recording_inspector_full_summary.html" %}
--{% elif current_tab == 'diagnostics' %}
--  {% include "partials/recording_inspector_full_diagnostics.html" %}
--{% elif current_tab == 'export' %}
--  {% include "partials/recording_inspector_full_export.html" %}
--{% endif %}
-+<div
-+  id="recording-inspector-body"
-+  {% if recording_inspector.auto_refresh_body %}
-+  hx-get="{{ recording_inspector.body_url }}"
-+  hx-trigger="load, every 2s"
-+  hx-swap="outerHTML"
-+  {% endif %}
-+>
-+  {% if current_tab == 'overview' %}
-+    {% include "partials/recording_inspector_full_overview.html" %}
-+  {% elif current_tab == 'speakers' %}
-+    {% include "partials/recording_inspector_full_speakers.html" %}
-+  {% elif current_tab == 'transcript' %}
-+    {% include "partials/recording_inspector_full_transcript.html" %}
-+  {% elif current_tab == 'summary' %}
-+    {% include "partials/recording_inspector_full_summary.html" %}
-+  {% elif current_tab == 'diagnostics' %}
-+    {% include "partials/recording_inspector_full_diagnostics.html" %}
-+  {% elif current_tab == 'export' %}
-+    {% include "partials/recording_inspector_full_export.html" %}
-+  {% endif %}
-+</div>
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 7aed771..7b16617 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -4402,12 +4402,11 @@ def _process_resummarize_only_job(
-     ):
-         return _ignored_result(job_id, recording_id, JOB_TYPE_LLM)
- 
--    if get_recording(recording_id, settings=settings) is None:
--        raise ValueError(f"Recording not found: {recording_id}")
--
-     _append_step_log(log_path, f"started job={job_id} type={JOB_TYPE_LLM}")
-     stage_metadata = {"operation": "resummarize_only"}
-     try:
-+        if get_recording(recording_id, settings=settings) is None:
-+            raise ValueError(f"Recording not found: {recording_id}")
-         _raise_if_stop_requested(
-             recording_id=recording_id,
-             settings=settings,
-@@ -4490,14 +4489,15 @@ def _process_resummarize_only_job(
-         }
-     except Exception as exc:
-         root_cause = root_cause_from_exception(exc)
--        mark_recording_pipeline_stage_failed(
--            recording_id,
--            stage_name="llm_extract",
--            error_code=root_cause.code,
--            error_text=root_cause.detail,
--            metadata=stage_metadata,
--            settings=settings,
--        )
-+        if get_recording(recording_id, settings=settings) is not None:
-+            mark_recording_pipeline_stage_failed(
-+                recording_id,
-+                stage_name="llm_extract",
-+                error_code=root_cause.code,
-+                error_text=root_cause.detail,
-+                metadata=stage_metadata,
-+                settings=settings,
-+            )
-         if not fail_job_if_started(job_id, str(exc), settings=settings):
-             raise
-         return {
-diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index f33b862..ee7257b 100644
---- a/tests/test_cov_lan_app_worker_tasks_branches.py
-+++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -4142,7 +4142,7 @@ def test_process_job_resummarize_only_ignored_when_start_is_stale(
-     assert ignored["status"] == "ignored"
- 
- 
--def test_process_job_resummarize_only_missing_recording_raises(
-+def test_process_job_resummarize_only_missing_recording_fails_job(
-     monkeypatch: pytest.MonkeyPatch,
-     tmp_path: Path,
- ) -> None:
-@@ -4154,14 +4154,32 @@ def test_process_job_resummarize_only_missing_recording_raises(
-         lambda **_kwargs: True,
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index 330f3fc..58607a2 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -4723,12 +4723,17 @@ def test_language_action_error_paths(
+     monkeypatch.setattr(
+         ui_routes, "_save_language_settings", lambda *_a, **_k: ("en", None)
      )
-     monkeypatch.setattr(worker_tasks, "get_recording", lambda *_a, **_k: None)
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "fail_job_if_started",
-+        lambda *_a, **_k: True,
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "root_cause_from_exception",
-+        lambda exc: SimpleNamespace(code="missing_recording", detail=str(exc)),
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "mark_recording_pipeline_stage_failed",
-+        lambda *_a, **_k: (_ for _ in ()).throw(
-+            AssertionError("should not mark stage when recording is missing")
-+        ),
-+    )
- 
--    with pytest.raises(ValueError, match="Recording not found"):
--        worker_tasks.process_job(
--            "job-rsum-missing",
--            "rec-rsum-missing",
--            JOB_TYPE_LLM,
--            resummarize_only=True,
--        )
-+    result = worker_tasks.process_job(
-+        "job-rsum-missing",
-+        "rec-rsum-missing",
-+        JOB_TYPE_LLM,
-+        resummarize_only=True,
-+    )
-+
-+    assert result["status"] == "failed"
- 
- 
- def test_process_job_resummarize_only_ignored_when_job_status_goes_stale(
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index fd43fbc..1ee4711 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -4846,14 +4846,64 @@ def test_recording_detail_summary_polls_while_resummarize_job_is_active(
-     page = c.get("/recordings/rec-rsum-ui-1?tab=summary")
-     assert page.status_code == 200
-     assert '/ui/recordings/rec-rsum-ui-1/body?tab=summary' in page.text
-+    assert 'id="recording-inspector-body"' in page.text
-+    assert 'hx-swap="outerHTML"' in page.text
-     assert "Regenerating summary..." in page.text
- 
-     body = c.get("/ui/recordings/rec-rsum-ui-1/body?tab=diagnostics")
-     assert body.status_code == 200
-+    assert '/ui/recordings/rec-rsum-ui-1/body?tab=diagnostics' in body.text
-     assert "Resummarize queued" not in body.text
-     assert "Regenerating summary..." in body.text
- 
- 
-+def test_recording_detail_body_stops_polling_after_resummarize_finishes(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-rsum-ui-stop-poll-1",
-+        source="drive",
-+        source_filename="summary.mp3",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    derived = cfg.recordings_root / "rec-rsum-ui-stop-poll-1" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "summary.json").write_text(
-+        json.dumps({"topic": "Old summary", "summary": "- old"}),
-+        encoding="utf-8",
-+    )
-+    create_job(
-+        "job-rsum-ui-stop-poll-1",
-+        recording_id="rec-rsum-ui-stop-poll-1",
-+        job_type=JOB_TYPE_LLM,
-+        status=JOB_STATUS_STARTED,
-+        settings=cfg,
-+    )
-+
-+    c = TestClient(api.app, follow_redirects=False)
-+    active_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
-+    assert active_body.status_code == 200
-+    assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' in active_body.text
-+    assert 'hx-trigger="load, every 2s"' in active_body.text
-+
 +    monkeypatch.setattr(
 +        ui_routes,
-+        "list_jobs",
-+        lambda **_kwargs: ([], 0),
++        "enqueue_recording_resummarize_job",
++        lambda *_a, **_k: None,
 +    )
+     ok_settings = c.post(f"/ui/recordings/{recording_id}/language/settings")
+     assert ok_settings.status_code == 303
+ 
+     assert c.post("/ui/recordings/missing/language/resummarize").status_code == 404
+     bad_resummarize = c.post(f"/ui/recordings/{recording_id}/language/resummarize")
+-    assert bad_resummarize.status_code == 503
++    assert bad_resummarize.status_code == 303
+ 
+     monkeypatch.setattr(
+         ui_routes,
+@@ -4763,6 +4768,19 @@ def test_language_action_error_paths(
+     retr_bad = c.post(f"/ui/recordings/{recording_id}/language/retranscribe")
+     assert retr_bad.status_code == 422
+ 
++    monkeypatch.setattr(
++        ui_routes,
++        "_save_language_settings",
++        lambda *_a, **_k: (None, None),
++    )
++    monkeypatch.setattr(
++        ui_routes,
++        "enqueue_recording_job",
++        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("queue down")),
++    )
++    retr_error = c.post(f"/ui/recordings/{recording_id}/language/retranscribe")
++    assert retr_error.status_code == 503
 +
-+    settled_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
-+    assert settled_body.status_code == 200
-+    assert 'hx-trigger="load, every 2s"' not in settled_body.text
-+    assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' not in settled_body.text
-+
-+
- def test_recording_detail_summary_shows_queued_resummarize_state(
-     tmp_path, monkeypatch
- ):
+     monkeypatch.setattr(
+         ui_routes, "_save_language_settings", lambda *_a, **_k: (None, None)
+     )

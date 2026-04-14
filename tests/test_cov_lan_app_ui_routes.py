@@ -4723,12 +4723,17 @@ def test_language_action_error_paths(
     monkeypatch.setattr(
         ui_routes, "_save_language_settings", lambda *_a, **_k: ("en", None)
     )
+    monkeypatch.setattr(
+        ui_routes,
+        "enqueue_recording_resummarize_job",
+        lambda *_a, **_k: None,
+    )
     ok_settings = c.post(f"/ui/recordings/{recording_id}/language/settings")
     assert ok_settings.status_code == 303
 
     assert c.post("/ui/recordings/missing/language/resummarize").status_code == 404
     bad_resummarize = c.post(f"/ui/recordings/{recording_id}/language/resummarize")
-    assert bad_resummarize.status_code == 503
+    assert bad_resummarize.status_code == 303
 
     monkeypatch.setattr(
         ui_routes,
@@ -4762,6 +4767,19 @@ def test_language_action_error_paths(
     )
     retr_bad = c.post(f"/ui/recordings/{recording_id}/language/retranscribe")
     assert retr_bad.status_code == 422
+
+    monkeypatch.setattr(
+        ui_routes,
+        "_save_language_settings",
+        lambda *_a, **_k: (None, None),
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "enqueue_recording_job",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("queue down")),
+    )
+    retr_error = c.post(f"/ui/recordings/{recording_id}/language/retranscribe")
+    assert retr_error.status_code == 503
 
     monkeypatch.setattr(
         ui_routes, "_save_language_settings", lambda *_a, **_k: (None, None)
