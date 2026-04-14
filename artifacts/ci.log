@@ -15,7 +15,7 @@ Requirement already satisfied: icalendar==6.3.1 in ./.venv-ci/lib/python3.12/sit
 Requirement already satisfied: idna==3.11 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 48)) (3.11)
 Requirement already satisfied: iniconfig==2.3.0 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 53)) (2.3.0)
 Requirement already satisfied: omegaconf==2.3.0 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 55)) (2.3.0)
-Requirement already satisfied: packaging==26.0 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 57)) (26.0)
+Requirement already satisfied: packaging==26.1 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 57)) (26.1)
 Requirement already satisfied: pip-tools==7.4.1 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 61)) (7.4.1)
 Requirement already satisfied: pluggy==1.6.0 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 63)) (1.6.0)
 Requirement already satisfied: prometheus-client==0.25.0 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 65)) (0.25.0)
@@ -95,7 +95,7 @@ Requirement already satisfied: h11>=0.16 in ./.venv-ci/lib/python3.12/site-packa
 Requirement already satisfied: MarkupSafe>=2.0 in ./.venv-ci/lib/python3.12/site-packages (from jinja2->lan-transcriber==0.1.0) (3.0.3)
 Requirement already satisfied: python-dotenv>=0.21.0 in ./.venv-ci/lib/python3.12/site-packages (from pydantic-settings->lan-transcriber==0.1.0) (1.2.2)
 Requirement already satisfied: iniconfig in ./.venv-ci/lib/python3.12/site-packages (from pytest->lan-transcriber==0.1.0) (2.3.0)
-Requirement already satisfied: packaging in ./.venv-ci/lib/python3.12/site-packages (from pytest->lan-transcriber==0.1.0) (26.0)
+Requirement already satisfied: packaging in ./.venv-ci/lib/python3.12/site-packages (from pytest->lan-transcriber==0.1.0) (26.1)
 Requirement already satisfied: pluggy<2.0,>=1.5 in ./.venv-ci/lib/python3.12/site-packages (from pytest->lan-transcriber==0.1.0) (1.6.0)
 Requirement already satisfied: coverage>=5.2.1 in ./.venv-ci/lib/python3.12/site-packages (from coverage[toml]>=5.2.1->pytest-cov->lan-transcriber==0.1.0) (7.13.5)
 WARNING: respx 0.22.0 does not provide the extra 'router'
@@ -104,8 +104,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15475 sha256=bd029f6d6c62c5ab68963b8526ffc73112c20ff4480fe2db8b0f6fb047810652
-  Stored in directory: /tmp/pip-ephem-wheel-cache-_a0aqn52/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15475 sha256=0deb0c7c6f0b500598bd55b8f1f77aecaf00c0dcb4b9155eb2f55deaebec6a01
+  Stored in directory: /tmp/pip-ephem-wheel-cache-dr87gjrn/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -182,7 +182,7 @@ TOTAL   15150      0   5062      0   100%
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1315 passed, 2 skipped, 11 warnings in 142.20s (0:02:22)
+1315 passed, 2 skipped, 11 warnings in 138.11s (0:02:18)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%

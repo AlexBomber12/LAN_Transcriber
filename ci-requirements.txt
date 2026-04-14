@@ -54,7 +54,7 @@ iniconfig==2.3.0
     # via pytest
 omegaconf==2.3.0
     # via -r ci-requirements.in
-packaging==26.0
+packaging==26.1
     # via
     #   build
     #   pytest
