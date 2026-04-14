@@ -19,6 +19,8 @@ _QUESTION_TYPE_KEYS = (
     "decision_seeking",
 )
 
+_NEUTRAL_TONE_SCORE = 50
+
 _LANGUAGE_NAME_MAP: dict[str, str] = {
     "ar": "Arabic",
     "de": "German",
@@ -158,11 +160,14 @@ def _language_name(code: str) -> str:
     return _LANGUAGE_NAME_MAP.get(code, code.upper())
 
 
-def _normalise_tone_score(value: Any, *, default: int = 0) -> int:
+def _normalise_tone_score(value: Any, *, default: Any = _NEUTRAL_TONE_SCORE) -> int:
     parsed = _parse_tone_score(value)
     if parsed is not None:
         return parsed
-    return min(max(default, 0), 100)
+    fallback = _parse_tone_score(default)
+    if fallback is None:
+        fallback = _NEUTRAL_TONE_SCORE
+    return fallback
 
 
 def _tone_score_missing(value: Any) -> bool:
@@ -422,7 +427,7 @@ def _build_structured_summary_payload(
 ) -> dict[str, Any]:
     resolved_tone_score = _normalise_tone_score(
         friendly if tone_score is None else tone_score,
-        default=0,
+        default=friendly,
     )
     payload: dict[str, Any] = {
         "friendly": resolved_tone_score,
@@ -455,7 +460,7 @@ def _fallback_payload(
     extracted: dict[str, Any],
     model: str,
     target_summary_language: str,
-    friendly: int,
+    friendly: int | None,
     default_topic: str,
     parse_error_reason: str,
 ) -> dict[str, Any]:
@@ -510,7 +515,7 @@ def build_summary_payload(
     raw_llm_content: str,
     model: str,
     target_summary_language: str,
-    friendly: int = 0,
+    friendly: int | None = None,
     default_topic: str = "Meeting summary",
     derived_dir: Path | None = None,
 ) -> dict[str, Any]:

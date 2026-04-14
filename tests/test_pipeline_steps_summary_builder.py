@@ -109,6 +109,26 @@ def test_build_summary_payload_uses_friendly_fallback_when_tone_score_missing() 
     assert payload["tone_score"] == 33
 
 
+def test_build_summary_payload_uses_neutral_fallback_when_tone_score_missing_and_no_friendly() -> None:
+    payload = build_summary_payload(
+        raw_llm_content=json.dumps(
+            {
+                "topic": "Fallback",
+                "summary_bullets": ["Still valid"],
+                "decisions": [],
+                "action_items": [],
+                "emotional_summary": "Neutral.",
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        ),
+        model="m",
+        target_summary_language="en",
+    )
+
+    assert payload["friendly"] == 50
+    assert payload["tone_score"] == 50
+
+
 def test_build_summary_payload_uses_friendly_fallback_when_tone_score_blank() -> None:
     payload = build_summary_payload(
         raw_llm_content=json.dumps(
@@ -267,6 +287,27 @@ def test_build_summary_payload_parse_error_uses_legacy_friendly_field_when_tone_
     assert payload["tone_score"] == 58
 
 
+def test_build_summary_payload_parse_error_uses_neutral_fallback_when_no_tone_score_or_friendly() -> None:
+    payload = build_summary_payload(
+        raw_llm_content=json.dumps(
+            {
+                "topic": "Legacy fallback",
+                "summary_bullets": 123,
+                "decisions": [],
+                "action_items": [],
+                "emotional_summary": "Positive.",
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        ),
+        model="m",
+        target_summary_language="en",
+    )
+
+    assert payload["parse_error"] is True
+    assert payload["friendly"] == 50
+    assert payload["tone_score"] == 50
+
+
 def test_build_summary_payload_parse_error_uses_legacy_friendly_field_when_tone_score_whitespace() -> None:
     payload = build_summary_payload(
         raw_llm_content=json.dumps(
@@ -337,6 +378,27 @@ def test_build_summary_payload_parse_error_uses_legacy_friendly_field_when_tone_
     assert payload["parse_error"] is True
     assert payload["friendly"] == 64
     assert payload["tone_score"] == 64
+
+
+def test_build_summary_payload_uses_neutral_fallback_when_friendly_default_is_boolean() -> None:
+    payload = build_summary_payload(
+        raw_llm_content=json.dumps(
+            {
+                "topic": "Fallback",
+                "summary_bullets": ["Still valid"],
+                "decisions": [],
+                "action_items": [],
+                "emotional_summary": "Neutral.",
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        ),
+        model="m",
+        target_summary_language="en",
+        friendly=True,
+    )
+
+    assert payload["friendly"] == 50
+    assert payload["tone_score"] == 50
 
 
 def test_build_summary_payload_parse_error_prefers_tone_score_when_present() -> None:
