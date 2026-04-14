@@ -1,5 +1,5 @@
 All checks passed!
-/home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages/pytest_asyncio/plugin.py:211: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+/home/alexey/LAN_Transcriber/.venv-ci/lib/python3.12/site-packages/pytest_asyncio/plugin.py:211: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
 The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
 
   warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
@@ -9,18 +9,18 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 22%]
 ........................................................................ [ 27%]
 ........................................................................ [ 33%]
-........................................................................ [ 39%]
+........................................................................ [ 38%]
 ........................................................................ [ 44%]
 ........................................................................ [ 50%]
 ........................................................................ [ 55%]
 ........................................................................ [ 61%]
-........................................................................ [ 67%]
-....................................................................s... [ 72%]
-........................................................................ [ 78%]
+........................................................................ [ 66%]
+........................................................................ [ 72%]
+.s...................................................................... [ 77%]
 ........................................................................ [ 83%]
 ........................................................................ [ 89%]
-........................................................................ [ 95%]
-...............................................................          [100%]
+........................................................................ [ 94%]
+.....................................................................    [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -29,11 +29,11 @@ lan_transcriber/pipeline_steps/precheck.py:3
 lan_transcriber/pipeline_steps/orchestrator.py:266
 tests/test_imports.py::test_imports[lan_transcriber.pipeline_steps.orchestrator]
 tests/test_imports.py::test_orchestrator_import_does_not_import_whisperx
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:266: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:266: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
     class Settings(BaseSettings):
 
 lan_app/config.py:58
-  /home/alexey/LAN_Transcriber/lan_app/config.py:58: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+  /home/alexey/LAN_Transcriber/lan_app/config.py:58: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
     class AppSettings(BaseSettings):
 
 tests/test_cov_lan_app_health_worker.py::test_healthchecks_module_main_guard
@@ -56,16 +56,16 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 
----------- coverage: platform linux, python 3.11.9-final-0 -----------
+---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   14978      0   5018      0   100%
+TOTAL   15035      0   5030      0   100%
 
 66 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1286 passed, 3 skipped, 11 warnings in 116.38s (0:01:56)
+1292 passed, 2 skipped, 11 warnings in 128.88s (0:02:08)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -136,7 +136,7 @@ lan_app/ui_routes.py                2683      0   1020      0   100%
 lan_app/uploads.py                    79      0     14      0   100%
 lan_app/worker.py                     31      0      2      0   100%
 lan_app/worker_status.py              58      0      6      0   100%
-lan_app/worker_tasks.py             1781      0    516      0   100%
+lan_app/worker_tasks.py             1838      0    528      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                              10246      0   3374      0   100%
+TOTAL                              10303      0   3386      0   100%

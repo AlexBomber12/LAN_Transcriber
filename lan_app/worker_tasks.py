@@ -927,55 +927,107 @@ class _CancelAwareLLMClient:
         finally:
             self._request_context = previous
 
-    async def _generate_in_child(self, *args: Any, **kwargs: Any) -> Any:
-        system_prompt = kwargs.get("system_prompt")
-        user_prompt = kwargs.get("user_prompt")
-        if system_prompt is None and args:
-            system_prompt = args[0]
-        if user_prompt is None and len(args) > 1:
-            user_prompt = args[1]
-        request_context = self._request_context
-        return await _run_child_stage_operation(
-            operation_name="llm_generate",
-            payload={
-                "base_url": getattr(self._base_client, "base_url", None),
-                "api_key": getattr(self._base_client, "api_key", None),
-                "timeout": getattr(self._base_client, "timeout", None),
-                "mock_response_path": (
-                    str(getattr(self._base_client, "mock_response_path"))
-                    if getattr(self._base_client, "mock_response_path", None) is not None
-                    else None
-                ),
-                "default_max_tokens": getattr(self._base_client, "max_tokens", None),
-                "default_max_tokens_retry": getattr(
-                    self._base_client,
-                    "max_tokens_retry",
-                    None,
-                ),
-                "system_prompt": system_prompt,
-                "user_prompt": user_prompt,
-                "model": kwargs.get("model"),
-                "response_format": kwargs.get("response_format"),
-                "max_tokens": kwargs.get("max_tokens"),
-                "max_tokens_retry": kwargs.get("max_tokens_retry"),
-            },
-            stage_name=self._stage_name,
-            stop_request_getter=lambda: _recording_stop_request(
-                self._recording_id,
-                settings=self._settings,
-            ),
-            grace_seconds=self._settings.stop_grace_seconds,
-            log_path=self._log_path,
-            checkpoint=request_context.checkpoint,
+    def _request_context_log_suffix(self, request_context: _LLMRequestContext) -> str:
+        parts = [f"checkpoint={request_context.checkpoint}"]
+        if request_context.chunk_index is not None:
+            parts.append(f"chunk_index={request_context.chunk_index}")
+        if request_context.chunk_total is not None:
+            parts.append(f"chunk_total={request_context.chunk_total}")
+        return " ".join(parts)
+
+    def _request_timeout_seconds(self) -> float | None:
+        timeout_seconds = safe_float(
+            getattr(self._base_client, "timeout", None),
+            default=0.0,
+        )
+        if timeout_seconds <= 0:
+            return None
+        return timeout_seconds
+
+    async def _cancel_request_task(self, task: asyncio.Future[Any]) -> None:
+        if task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except BaseException:
+            return
+
+    def _raise_if_request_stop_requested(
+        self,
+        *,
+        request_context: _LLMRequestContext,
+    ) -> None:
+        stop_request = _recording_stop_request(
+            self._recording_id,
+            settings=self._settings,
+        )
+        if stop_request is None:
+            return
+        _cancel_inflight_llm_chunk_state(
+            recording_id=self._recording_id,
+            settings=self._settings,
             chunk_index=request_context.chunk_index,
             chunk_total=request_context.chunk_total,
-            on_force_stop=lambda: _cancel_inflight_llm_chunk_state(
-                recording_id=self._recording_id,
-                settings=self._settings,
-                chunk_index=request_context.chunk_index,
-                chunk_total=request_context.chunk_total,
-            ),
         )
+        raise RecordingStopRequested(
+            stage_name=self._stage_name,
+            checkpoint=request_context.checkpoint,
+            stop_request=stop_request,
+            chunk_index=request_context.chunk_index,
+            chunk_total=request_context.chunk_total,
+        )
+
+    async def _await_inline_generate(self, awaitable: Any) -> Any:
+        request_context = self._request_context
+        timeout_seconds = self._request_timeout_seconds()
+        request_task = asyncio.ensure_future(awaitable)
+        deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+        log_suffix = self._request_context_log_suffix(request_context)
+        start_perf = time.perf_counter()
+        start_message = f"llm request started {log_suffix}"
+        if timeout_seconds is not None:
+            start_message += f" timeout={timeout_seconds:g}s"
+        _append_step_log(self._log_path, start_message)
+        try:
+            while True:
+                self._raise_if_request_stop_requested(request_context=request_context)
+                wait_timeout = 0.1
+                if deadline is not None:
+                    remaining = max(deadline - time.monotonic(), 0.0)
+                    wait_timeout = min(wait_timeout, remaining)
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.shield(request_task),
+                        timeout=wait_timeout,
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    if deadline is None:
+                        continue
+                    if time.monotonic() < deadline:
+                        continue
+                    await self._cancel_request_task(request_task)
+                    raise
+            self._raise_if_request_stop_requested(request_context=request_context)
+            elapsed_seconds = time.perf_counter() - start_perf
+            _append_step_log(
+                self._log_path,
+                f"llm request completed {log_suffix} elapsed={elapsed_seconds:.3f}s",
+            )
+            return result
+        except RecordingStopRequested:
+            _append_step_log(self._log_path, f"llm request cancelled {log_suffix}")
+            raise
+        except asyncio.TimeoutError:
+            _append_step_log(self._log_path, f"llm request timed out {log_suffix}")
+            raise
+        except asyncio.CancelledError:
+            await self._cancel_request_task(request_task)
+            raise
+        except BaseException:
+            await self._cancel_request_task(request_task)
+            raise
 
     def generate(self, *args: Any, **kwargs: Any) -> Any:
         request_context = self._request_context
@@ -987,15 +1039,14 @@ class _CancelAwareLLMClient:
             chunk_index=request_context.chunk_index,
             chunk_total=request_context.chunk_total,
         )
-        if isinstance(self._base_client, _ORIGINAL_LLM_CLIENT_CLASS):
-            return self._generate_in_child(*args, **kwargs)
         result = self._base_client.generate(*args, **kwargs)
         if inspect.isawaitable(result):
 
             async def _await_result() -> Any:
-                return await result
+                return await self._await_inline_generate(result)
 
             return _await_result()
+        self._raise_if_request_stop_requested(request_context=request_context)
         return result
 
 
@@ -2295,27 +2346,6 @@ def _run_default_diarization_child_operation(payload: dict[str, Any]) -> dict[st
     return result
 
 
-def _run_llm_generate_child_operation(payload: dict[str, Any]) -> dict[str, Any]:
-    client = LLMClient(
-        base_url=payload.get("base_url"),
-        api_key=payload.get("api_key"),
-        timeout=payload.get("timeout"),
-        mock_response_path=payload.get("mock_response_path"),
-        max_tokens=payload.get("default_max_tokens"),
-        max_tokens_retry=payload.get("default_max_tokens_retry"),
-    )
-    return asyncio.run(
-        client.generate(
-            system_prompt=str(payload.get("system_prompt") or ""),
-            user_prompt=str(payload.get("user_prompt") or ""),
-            model=payload.get("model"),
-            response_format=payload.get("response_format"),
-            max_tokens=payload.get("max_tokens"),
-            max_tokens_retry=payload.get("max_tokens_retry"),
-        )
-    )
-
-
 def _run_test_sleep_child_operation(payload: dict[str, Any]) -> dict[str, Any] | str | None:
     time.sleep(max(float(payload.get("sleep_seconds") or 0.0), 0.0))
     error_message = str(payload.get("error_message") or "").strip()
@@ -2327,7 +2357,6 @@ def _run_test_sleep_child_operation(payload: dict[str, Any]) -> dict[str, Any] |
 _CHILD_STAGE_OPERATION_HANDLERS: dict[str, Any] = {
     "asr_default": _run_default_asr_child_operation,
     "diarization_default": _run_default_diarization_child_operation,
-    "llm_generate": _run_llm_generate_child_operation,
     "test_sleep": _run_test_sleep_child_operation,
 }
 

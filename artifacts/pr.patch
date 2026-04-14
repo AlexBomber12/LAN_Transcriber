@@ -1,71 +1,628 @@
-diff --git a/lan_app/snippet_repair.py b/lan_app/snippet_repair.py
-index 64a66a1..9337479 100644
---- a/lan_app/snippet_repair.py
-+++ b/lan_app/snippet_repair.py
-@@ -687,18 +687,22 @@ def repair_recording_snippets(
-         pipeline_settings=pipeline_settings,
-     )
-     _replace_staged_snippet_outputs(recording_id, staged_root, settings=cfg)
--    if pipeline_settings.noise_detection_enabled:
--        summary_source = noise_summary or {}
--        update_diarization_metadata_with_noise(
--            _derived_dir(recording_id, settings=cfg) / "diarization_metadata.json",
--            summary={
--                "noise_speakers": list(summary_source.get("noise_speakers") or []),
--                "speaker_metrics": dict(summary_source.get("speaker_metrics") or {}),
--                "threshold": summary_source.get(
--                    "threshold", pipeline_settings.noise_speech_ratio_threshold
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index b84d43f..f7246e8 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -927,56 +927,108 @@ class _CancelAwareLLMClient:
+         finally:
+             self._request_context = previous
+ 
+-    async def _generate_in_child(self, *args: Any, **kwargs: Any) -> Any:
+-        system_prompt = kwargs.get("system_prompt")
+-        user_prompt = kwargs.get("user_prompt")
+-        if system_prompt is None and args:
+-            system_prompt = args[0]
+-        if user_prompt is None and len(args) > 1:
+-            user_prompt = args[1]
+-        request_context = self._request_context
+-        return await _run_child_stage_operation(
+-            operation_name="llm_generate",
+-            payload={
+-                "base_url": getattr(self._base_client, "base_url", None),
+-                "api_key": getattr(self._base_client, "api_key", None),
+-                "timeout": getattr(self._base_client, "timeout", None),
+-                "mock_response_path": (
+-                    str(getattr(self._base_client, "mock_response_path"))
+-                    if getattr(self._base_client, "mock_response_path", None) is not None
+-                    else None
 -                ),
+-                "default_max_tokens": getattr(self._base_client, "max_tokens", None),
+-                "default_max_tokens_retry": getattr(
+-                    self._base_client,
+-                    "max_tokens_retry",
+-                    None,
+-                ),
+-                "system_prompt": system_prompt,
+-                "user_prompt": user_prompt,
+-                "model": kwargs.get("model"),
+-                "response_format": kwargs.get("response_format"),
+-                "max_tokens": kwargs.get("max_tokens"),
+-                "max_tokens_retry": kwargs.get("max_tokens_retry"),
 -            },
++    def _request_context_log_suffix(self, request_context: _LLMRequestContext) -> str:
++        parts = [f"checkpoint={request_context.checkpoint}"]
++        if request_context.chunk_index is not None:
++            parts.append(f"chunk_index={request_context.chunk_index}")
++        if request_context.chunk_total is not None:
++            parts.append(f"chunk_total={request_context.chunk_total}")
++        return " ".join(parts)
++
++    def _request_timeout_seconds(self) -> float | None:
++        timeout_seconds = safe_float(
++            getattr(self._base_client, "timeout", None),
++            default=0.0,
++        )
++        if timeout_seconds <= 0:
++            return None
++        return timeout_seconds
++
++    async def _cancel_request_task(self, task: asyncio.Future[Any]) -> None:
++        if task.done():
++            return
++        task.cancel()
++        try:
++            await task
++        except BaseException:
++            return
++
++    def _raise_if_request_stop_requested(
++        self,
++        *,
++        request_context: _LLMRequestContext,
++    ) -> None:
++        stop_request = _recording_stop_request(
++            self._recording_id,
++            settings=self._settings,
++        )
++        if stop_request is None:
++            return
++        _cancel_inflight_llm_chunk_state(
++            recording_id=self._recording_id,
++            settings=self._settings,
++            chunk_index=request_context.chunk_index,
++            chunk_total=request_context.chunk_total,
++        )
++        raise RecordingStopRequested(
+             stage_name=self._stage_name,
+-            stop_request_getter=lambda: _recording_stop_request(
+-                self._recording_id,
+-                settings=self._settings,
+-            ),
+-            grace_seconds=self._settings.stop_grace_seconds,
+-            log_path=self._log_path,
+             checkpoint=request_context.checkpoint,
++            stop_request=stop_request,
+             chunk_index=request_context.chunk_index,
+             chunk_total=request_context.chunk_total,
+-            on_force_stop=lambda: _cancel_inflight_llm_chunk_state(
+-                recording_id=self._recording_id,
+-                settings=self._settings,
+-                chunk_index=request_context.chunk_index,
+-                chunk_total=request_context.chunk_total,
+-            ),
+         )
+ 
++    async def _await_inline_generate(self, awaitable: Any) -> Any:
++        request_context = self._request_context
++        timeout_seconds = self._request_timeout_seconds()
++        request_task = asyncio.ensure_future(awaitable)
++        deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
++        log_suffix = self._request_context_log_suffix(request_context)
++        start_perf = time.perf_counter()
++        start_message = f"llm request started {log_suffix}"
++        if timeout_seconds is not None:
++            start_message += f" timeout={timeout_seconds:g}s"
++        _append_step_log(self._log_path, start_message)
++        try:
++            while True:
++                self._raise_if_request_stop_requested(request_context=request_context)
++                wait_timeout = 0.1
++                if deadline is not None:
++                    remaining = max(deadline - time.monotonic(), 0.0)
++                    wait_timeout = min(wait_timeout, remaining)
++                try:
++                    result = await asyncio.wait_for(
++                        asyncio.shield(request_task),
++                        timeout=wait_timeout,
++                    )
++                    break
++                except asyncio.TimeoutError:
++                    if deadline is None:
++                        continue
++                    if time.monotonic() < deadline:
++                        continue
++                    await self._cancel_request_task(request_task)
++                    raise
++            self._raise_if_request_stop_requested(request_context=request_context)
++            elapsed_seconds = time.perf_counter() - start_perf
++            _append_step_log(
++                self._log_path,
++                f"llm request completed {log_suffix} elapsed={elapsed_seconds:.3f}s",
++            )
++            return result
++        except RecordingStopRequested:
++            _append_step_log(self._log_path, f"llm request cancelled {log_suffix}")
++            raise
++        except asyncio.TimeoutError:
++            _append_step_log(self._log_path, f"llm request timed out {log_suffix}")
++            raise
++        except asyncio.CancelledError:
++            await self._cancel_request_task(request_task)
++            raise
++        except BaseException:
++            await self._cancel_request_task(request_task)
++            raise
++
+     def generate(self, *args: Any, **kwargs: Any) -> Any:
+         request_context = self._request_context
+         _raise_if_stop_requested(
+@@ -987,15 +1039,14 @@ class _CancelAwareLLMClient:
+             chunk_index=request_context.chunk_index,
+             chunk_total=request_context.chunk_total,
+         )
+-        if isinstance(self._base_client, _ORIGINAL_LLM_CLIENT_CLASS):
+-            return self._generate_in_child(*args, **kwargs)
+         result = self._base_client.generate(*args, **kwargs)
+         if inspect.isawaitable(result):
+ 
+             async def _await_result() -> Any:
+-                return await result
++                return await self._await_inline_generate(result)
+ 
+             return _await_result()
++        self._raise_if_request_stop_requested(request_context=request_context)
+         return result
+ 
+ 
+@@ -2295,27 +2346,6 @@ def _run_default_diarization_child_operation(payload: dict[str, Any]) -> dict[st
+     return result
+ 
+ 
+-def _run_llm_generate_child_operation(payload: dict[str, Any]) -> dict[str, Any]:
+-    client = LLMClient(
+-        base_url=payload.get("base_url"),
+-        api_key=payload.get("api_key"),
+-        timeout=payload.get("timeout"),
+-        mock_response_path=payload.get("mock_response_path"),
+-        max_tokens=payload.get("default_max_tokens"),
+-        max_tokens_retry=payload.get("default_max_tokens_retry"),
+-    )
+-    return asyncio.run(
+-        client.generate(
+-            system_prompt=str(payload.get("system_prompt") or ""),
+-            user_prompt=str(payload.get("user_prompt") or ""),
+-            model=payload.get("model"),
+-            response_format=payload.get("response_format"),
+-            max_tokens=payload.get("max_tokens"),
+-            max_tokens_retry=payload.get("max_tokens_retry"),
 -        )
-+    summary_source = noise_summary or {}
-+    # Always refresh diarization_metadata noise fields so a repair leaves them
-+    # consistent with the repaired manifest. When detection is disabled we
-+    # write an explicit empty summary to wipe stale noise_speakers/metrics that
-+    # would otherwise persist from a prior detection-enabled run and bleed
-+    # into transcript-export filtering on resume paths.
-+    update_diarization_metadata_with_noise(
-+        _derived_dir(recording_id, settings=cfg) / "diarization_metadata.json",
-+        summary={
-+            "noise_speakers": list(summary_source.get("noise_speakers") or []),
-+            "speaker_metrics": dict(summary_source.get("speaker_metrics") or {}),
-+            "threshold": summary_source.get(
-+                "threshold", pipeline_settings.noise_speech_ratio_threshold
-+            ),
-+        },
-+    )
-     metadata = snippet_export_result_metadata(manifest)
-     result = SnippetRepairResult(
-         recording_id=recording_id,
-diff --git a/tests/test_snippet_repair.py b/tests/test_snippet_repair.py
-index 0efc533..0b96556 100644
---- a/tests/test_snippet_repair.py
-+++ b/tests/test_snippet_repair.py
-@@ -838,6 +838,17 @@ def test_repair_recording_snippets_skips_noise_detection_when_disabled(
-         lambda *_a, **_k: pytest.fail("noise detection should be disabled"),
+-    )
+-
+-
+ def _run_test_sleep_child_operation(payload: dict[str, Any]) -> dict[str, Any] | str | None:
+     time.sleep(max(float(payload.get("sleep_seconds") or 0.0), 0.0))
+     error_message = str(payload.get("error_message") or "").strip()
+@@ -2327,7 +2357,6 @@ def _run_test_sleep_child_operation(payload: dict[str, Any]) -> dict[str, Any] |
+ _CHILD_STAGE_OPERATION_HANDLERS: dict[str, Any] = {
+     "asr_default": _run_default_asr_child_operation,
+     "diarization_default": _run_default_diarization_child_operation,
+-    "llm_generate": _run_llm_generate_child_operation,
+     "test_sleep": _run_test_sleep_child_operation,
+ }
+ 
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 732334b..29c4ba5 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -756,7 +756,7 @@ Queue (in order)
+ - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
+ 
+ 151) PR-LLM-INLINE-EXECUTION-01: Execute LLM calls inline in worker process instead of spawning child processes
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-LLM-INLINE-EXECUTION-01.md
+ - Depends on: PR-NOISE-SPEAKER-FILTER-01
+ 
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index 8964e08..2174c65 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -1169,7 +1169,7 @@ def test_cancel_inflight_llm_chunk_state_ignores_missing_and_db_errors(
      )
  
-+    # Seed stale noise_speakers in diarization_metadata to simulate a prior
-+    # detection-enabled run; the disabled repair must clear them so resumes
-+    # don't continue applying old noise labels.
-+    metadata_path = (
-+        cfg.recordings_root / "rec-repair-no-noise" / "derived" / "diarization_metadata.json"
+ 
+-def test_cancel_aware_llm_client_passes_chunk_context_to_child(
++def test_cancel_aware_llm_client_passes_chunk_context_to_inline_client(
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+@@ -1183,19 +1183,20 @@ def test_cancel_aware_llm_client_passes_chunk_context_to_child(
+     )
+     captured: dict[str, Any] = {}
+ 
+-    async def _fake_run_child_stage_operation(**kwargs):
+-        captured.update(kwargs)
+-        return {"role": "assistant", "content": "{}"}
++    class _InlineClient:
++        timeout = 2.0
+ 
+-    monkeypatch.setattr(worker_tasks, "_run_child_stage_operation", _fake_run_child_stage_operation)
++        async def generate(self, *args, **kwargs):
++            captured["args"] = args
++            captured["kwargs"] = kwargs
++            return {"role": "assistant", "content": "{}"}
++
++    def _unexpected_child_path(**_kwargs):
++        raise AssertionError("LLM generate should execute inline")
++
++    monkeypatch.setattr(worker_tasks, "_run_child_stage_operation", _unexpected_child_path)
+     llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
+-        base_client=worker_tasks.LLMClient(
+-            base_url="http://127.0.0.1:8000",
+-            api_key="token",
+-            timeout=1.0,
+-            max_tokens=512,
+-            max_tokens_retry=768,
+-        ),
++        base_client=_InlineClient(),
+         recording_id="rec-stop-child-llm-1",
+         settings=cfg,
+         stage_name="llm_extract",
+@@ -1219,12 +1220,101 @@ def test_cancel_aware_llm_client_passes_chunk_context_to_child(
+         )
+ 
+     assert result == {"role": "assistant", "content": "{}"}
+-    assert captured["operation_name"] == "llm_generate"
+-    assert captured["checkpoint"] == "llm_chunk_request"
+-    assert captured["chunk_index"] == "2"
+-    assert captured["chunk_total"] == 5
+-    assert captured["payload"]["max_tokens"] == 333
+-    assert captured["payload"]["max_tokens_retry"] == 444
++    assert captured["kwargs"]["system_prompt"] == "sys"
++    assert captured["kwargs"]["user_prompt"] == "user"
++    assert captured["kwargs"]["max_tokens"] == 333
++    assert captured["kwargs"]["max_tokens_retry"] == 444
++
++
++def test_cancel_aware_llm_client_cancels_inline_request_on_stop(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-inline-llm-1",
++        source="test",
++        source_filename="llm-stop.wav",
++        settings=cfg,
 +    )
-+    metadata_path.write_text(
-+        json.dumps({"degraded": False, "noise_speakers": ["STALE"]}),
-+        encoding="utf-8",
++    cancelled_chunks: list[dict[str, Any]] = []
++
++    class _SlowInlineClient:
++        timeout = 1.0
++
++        def __init__(self) -> None:
++            self.cancelled = False
++
++        async def generate(self, *_args, **_kwargs):
++            try:
++                await asyncio.Future()
++            except asyncio.CancelledError:
++                self.cancelled = True
++                raise
++
++    def _mark_cancelled(recording_id: str, **kwargs: Any) -> dict[str, str]:
++        cancelled_chunks.append({"recording_id": recording_id, **kwargs})
++        return {"status": "cancelled"}
++
++    monkeypatch.setattr(
++        worker_tasks,
++        "mark_recording_llm_chunk_cancelled",
++        _mark_cancelled,
++    )
++    slow_client = _SlowInlineClient()
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=slow_client,
++        recording_id="rec-stop-inline-llm-1",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm-stop.log",
 +    )
 +
-     snippet_repair.repair_recording_snippets(
-         "rec-repair-no-noise",
-         settings=cfg,
-@@ -849,6 +860,9 @@ def test_repair_recording_snippets_skips_noise_detection_when_disabled(
-         )
++    async def _exercise() -> worker_tasks.RecordingStopRequested:  # noqa: SLF001
++        async def _request_stop() -> None:
++            await asyncio.sleep(0.2)
++            set_recording_cancel_request(
++                "rec-stop-inline-llm-1",
++                requested_by="user",
++                reason_code="user_stop",
++                reason_text="Stop requested by user",
++                settings=cfg,
++            )
++
++        stopper = asyncio.create_task(_request_stop())
++        try:
++            with llm_client.request_context(
++                checkpoint="llm_chunk_request",
++                chunk_index="2",
++                chunk_total=5,
++            ):
++                with pytest.raises(worker_tasks.RecordingStopRequested) as exc_info:
++                    await llm_client.generate(
++                        system_prompt="sys",
++                        user_prompt="user",
++                    )
++            return exc_info.value
++        finally:
++            await stopper
++
++    stop = asyncio.run(_exercise())
++    assert slow_client.cancelled is True
++    assert cancelled_chunks == [
++        {
++            "recording_id": "rec-stop-inline-llm-1",
++            "settings": cfg,
++            "chunk_group": "extract",
++            "chunk_index": "2",
++            "chunk_total": 5,
++        }
++    ]
++    assert stop.chunk_index == "2"
++    assert stop.chunk_total == 5
++    assert (
++        "llm request cancelled checkpoint=llm_chunk_request chunk_index=2 chunk_total=5"
++        in (tmp_path / "logs" / "llm-stop.log").read_text(encoding="utf-8")
++    )
+ 
+ 
+ def test_hard_stop_helper_utilities_cover_payloads_error_mapping_and_child_helpers(
+@@ -1357,37 +1447,13 @@ def test_hard_stop_helper_utilities_cover_payloads_error_mapping_and_child_helpe
      )
-     assert "noise_speakers" not in manifest
-+    persisted_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-+    assert persisted_metadata["noise_speakers"] == []
-+    assert persisted_metadata["noise_speaker_metrics"] == {}
+     assert diar_child["diarization_mode"] == "fallback"
+ 
+-    class _FakeChildLLM:
+-        def __init__(self, **kwargs):
+-            self.kwargs = kwargs
+-
+-        async def generate(self, **kwargs):
+-            return {"role": "assistant", "content": json.dumps(kwargs, sort_keys=True)}
+-
+-    monkeypatch.setattr(worker_tasks, "LLMClient", _FakeChildLLM)
+-    llm_child = worker_tasks._run_llm_generate_child_operation(  # noqa: SLF001
+-        {
+-            "base_url": "http://127.0.0.1:8000",
+-            "api_key": "token",
+-            "timeout": 1.0,
+-            "mock_response_path": None,
+-            "default_max_tokens": 512,
+-            "default_max_tokens_retry": 768,
+-            "system_prompt": "sys",
+-            "user_prompt": "user",
+-            "model": "test-model",
+-            "response_format": {"type": "json_object"},
+-            "max_tokens": 123,
+-            "max_tokens_retry": 456,
+-        }
+-    )
+-    assert "\"max_tokens\": 123" in llm_child["content"]
++    assert "llm_generate" not in worker_tasks._CHILD_STAGE_OPERATION_HANDLERS  # noqa: SLF001
+     assert worker_tasks._run_test_sleep_child_operation({"sleep_seconds": 0.0, "result": "slept"}) == "slept"  # noqa: SLF001
+     with pytest.raises(RuntimeError, match="boom"):
+         worker_tasks._run_test_sleep_child_operation({"sleep_seconds": 0.0, "error_message": "boom"})  # noqa: SLF001
  
  
- def test_repair_recording_snippets_is_idempotent(tmp_path: Path) -> None:
+-def test_cancel_aware_llm_client_supports_positional_prompts_for_child(
++def test_cancel_aware_llm_client_supports_positional_prompts_inline(
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+@@ -1401,19 +1467,20 @@ def test_cancel_aware_llm_client_supports_positional_prompts_for_child(
+     )
+     captured: dict[str, Any] = {}
+ 
+-    async def _fake_run_child_stage_operation(**kwargs):
+-        captured.update(kwargs)
+-        return {"role": "assistant", "content": "{}"}
++    class _InlineClient:
++        timeout = 2.0
+ 
+-    monkeypatch.setattr(worker_tasks, "_run_child_stage_operation", _fake_run_child_stage_operation)
++        async def generate(self, *args, **kwargs):
++            captured["args"] = args
++            captured["kwargs"] = kwargs
++            return {"role": "assistant", "content": "{}"}
++
++    def _unexpected_child_path(**_kwargs):
++        raise AssertionError("LLM generate should execute inline")
++
++    monkeypatch.setattr(worker_tasks, "_run_child_stage_operation", _unexpected_child_path)
+     llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
+-        base_client=worker_tasks._ORIGINAL_LLM_CLIENT_CLASS(  # noqa: SLF001
+-            base_url="http://127.0.0.1:8000",
+-            api_key="token",
+-            timeout=1.0,
+-            max_tokens=512,
+-            max_tokens_retry=768,
+-        ),
++        base_client=_InlineClient(),
+         recording_id="rec-stop-child-llm-2",
+         settings=cfg,
+         stage_name="llm_extract",
+@@ -1422,8 +1489,176 @@ def test_cancel_aware_llm_client_supports_positional_prompts_for_child(
+ 
+     result = asyncio.run(llm_client.generate("sys-pos", "user-pos", model="test-model"))
+     assert result == {"role": "assistant", "content": "{}"}
+-    assert captured["payload"]["system_prompt"] == "sys-pos"
+-    assert captured["payload"]["user_prompt"] == "user-pos"
++    assert captured["args"] == ("sys-pos", "user-pos")
++    assert captured["kwargs"]["model"] == "test-model"
++
++
++def test_cancel_aware_llm_client_times_out_inline_requests(tmp_path: Path) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-inline-llm-2",
++        source="test",
++        source_filename="llm-timeout.wav",
++        settings=cfg,
++    )
++
++    class _SlowInlineClient:
++        timeout = 0.05
++
++        def __init__(self) -> None:
++            self.cancelled = False
++
++        async def generate(self, *_args, **_kwargs):
++            try:
++                await asyncio.Future()
++            except asyncio.CancelledError:
++                self.cancelled = True
++                raise
++
++    slow_client = _SlowInlineClient()
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=slow_client,
++        recording_id="rec-stop-inline-llm-2",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm-timeout.log",
++    )
++
++    with pytest.raises(asyncio.TimeoutError):
++        asyncio.run(
++            llm_client.generate(
++                system_prompt="sys",
++                user_prompt="user",
++            )
++        )
++
++    assert slow_client.cancelled is True
++    assert "llm request timed out checkpoint=before_llm_request" in (
++        tmp_path / "logs" / "llm-timeout.log"
++    ).read_text(encoding="utf-8")
++
++
++def test_cancel_aware_llm_client_retries_poll_timeout_without_deadline(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-inline-llm-3",
++        source="test",
++        source_filename="llm-poll.wav",
++        settings=cfg,
++    )
++
++    class _InlineClient:
++        timeout = None
++
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=_InlineClient(),
++        recording_id="rec-stop-inline-llm-3",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm-poll.log",
++    )
++    original_wait_for = worker_tasks.asyncio.wait_for
++    wait_calls = {"count": 0}
++
++    async def _fake_wait_for(awaitable, timeout):
++        wait_calls["count"] += 1
++        if wait_calls["count"] == 1:
++            raise asyncio.TimeoutError
++        return await original_wait_for(awaitable, timeout=timeout)
++
++    async def _done() -> dict[str, str]:
++        return {"role": "assistant", "content": "ok"}
++
++    monkeypatch.setattr(worker_tasks.asyncio, "wait_for", _fake_wait_for)
++    result = asyncio.run(llm_client._await_inline_generate(_done()))  # noqa: SLF001
++    assert result == {"role": "assistant", "content": "ok"}
++    assert wait_calls["count"] == 2
++
++
++def test_cancel_aware_llm_client_inline_cancelled_error_cleans_request_task(tmp_path: Path) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-inline-llm-5",
++        source="test",
++        source_filename="llm-cancel.wav",
++        settings=cfg,
++    )
++
++    class _SlowInlineClient:
++        timeout = 1.0
++
++        def __init__(self) -> None:
++            self.cancelled = False
++
++        async def generate(self, *_args, **_kwargs):
++            try:
++                await asyncio.Future()
++            except asyncio.CancelledError:
++                self.cancelled = True
++                raise
++
++    slow_client = _SlowInlineClient()
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=slow_client,
++        recording_id="rec-stop-inline-llm-5",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm-cancel.log",
++    )
++
++    async def _exercise() -> None:
++        task = asyncio.create_task(
++            llm_client.generate(
++                system_prompt="sys",
++                user_prompt="user",
++            )
++        )
++        await asyncio.sleep(0)
++        task.cancel()
++        with pytest.raises(asyncio.CancelledError):
++            await task
++
++    asyncio.run(_exercise())
++    assert slow_client.cancelled is True
++
++
++def test_cancel_aware_llm_client_inline_runtime_error_propagates(tmp_path: Path) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-inline-llm-6",
++        source="test",
++        source_filename="llm-error.wav",
++        settings=cfg,
++    )
++
++    class _ErrorInlineClient:
++        timeout = 1.0
++
++        async def generate(self, *_args, **_kwargs):
++            raise RuntimeError("boom")
++
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=_ErrorInlineClient(),
++        recording_id="rec-stop-inline-llm-6",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm-error.log",
++    )
++
++    with pytest.raises(RuntimeError, match="boom"):
++        asyncio.run(
++            llm_client.generate(
++                system_prompt="sys",
++                user_prompt="user",
++            )
++        )
+ 
+ 
+ def test_execute_diarization_workflow_direct_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -756,7 +756,7 @@ Queue (in order)
 - Depends on: PR-ASR-FORCE-TRANSCRIBE-01
 
 151) PR-LLM-INLINE-EXECUTION-01: Execute LLM calls inline in worker process instead of spawning child processes
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-LLM-INLINE-EXECUTION-01.md
 - Depends on: PR-NOISE-SPEAKER-FILTER-01
 
