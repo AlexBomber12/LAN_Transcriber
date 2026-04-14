@@ -562,30 +562,6 @@ def _merge_similar(lines: Iterable[str], threshold: float) -> List[str]:
     return out
 
 
-def _sentiment_score(text: str) -> int | float:
-    from transformers import pipeline as hf_pipeline
-
-    sentiment = hf_pipeline(
-        "sentiment-analysis",
-        model="distilbert/distilbert-base-uncased-finetuned-sst-2-english",
-        device=-1,
-    )
-    try:
-        sent = sentiment(
-            text[:4000],
-            truncation=True,
-            max_length=512,
-        )[0]
-    except Exception as exc:
-        _logger.warning("Sentiment scoring failed (%s); using neutral score", type(exc).__name__)
-        return 0.0
-    if sent["label"] == "positive":
-        return int(sent["score"] * 100)
-    if sent["label"] == "negative":
-        return int((1 - sent["score"]) * 100)
-    return 50
-
-
 def refresh_aliases(result: TranscriptResult, alias_path: Path = ALIAS_PATH) -> None:
     aliases = _load_aliases(alias_path)
     result.speakers = sorted({aliases.get(s.speaker, s.speaker) for s in result.segments})
@@ -2417,7 +2393,7 @@ async def _run_chunked_llm_summary(
     cfg: Settings,
     llm_model: str,
     target_summary_language: str,
-    friendly: int,
+    friendly: int | None = None,
     default_topic: str,
     calendar_title: str | None,
     calendar_attendees: Sequence[str],
@@ -2425,6 +2401,7 @@ async def _run_chunked_llm_summary(
     chunk_state_store: ChunkStateStore | None = None,
     step_log_callback: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
+    del friendly
     try:
         compact_transcript = build_compact_transcript(
             speaker_turns,
@@ -2888,7 +2865,6 @@ async def _run_chunked_llm_summary(
             raw_llm_content=str(raw_merge.get("content") or ""),
             model=llm_model,
             target_summary_language=target_summary_language,
-            friendly=friendly,
             default_topic=default_topic,
             derived_dir=derived_dir,
         )
@@ -3448,7 +3424,6 @@ async def run_pipeline(
                 status="no_speech",
             )
         else:
-            friendly = _sentiment_score(transcript_text)
             llm_prompt_text = _speaker_turn_prompt_text(transcript_speaker_turns, aliases=aliases)
             if _use_chunked_llm(llm_prompt_text, cfg):
                 summary_payload = await _run_chunked_llm_summary(
@@ -3460,7 +3435,6 @@ async def run_pipeline(
                     cfg=cfg,
                     llm_model=llm_model,
                     target_summary_language=summary_lang,
-                    friendly=friendly,
                     default_topic=cal_title or "Meeting summary",
                     calendar_title=cal_title,
                     calendar_attendees=cal_attendees,
@@ -3488,10 +3462,10 @@ async def run_pipeline(
                     raw_llm_content=str(msg.get("content") or ""),
                     model=llm_model,
                     target_summary_language=summary_lang,
-                    friendly=friendly,
                     default_topic=cal_title or "Meeting summary",
                     derived_dir=artifacts.summary_json_path.parent,
                 )
+            friendly = int(summary_payload.get("friendly") or 0)
         serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in transcript_speaker_turns]
         speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in transcript_speaker_turns))
         atomic_write_text(artifacts.transcript_txt_path, transcript_text)

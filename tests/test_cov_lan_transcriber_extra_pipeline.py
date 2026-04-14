@@ -2185,7 +2185,6 @@ async def test_run_pipeline_uses_sequential_scheduler_for_shared_gpu(
         ),
     )
     monkeypatch.setattr(pipeline, "_cleanup_cuda_memory", lambda device: events.append(f"cleanup:{device}"))
-    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
     monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
     monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
     monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
@@ -2265,7 +2264,6 @@ async def test_run_pipeline_uses_parallel_scheduler_only_for_safe_devices(
         ),
     )
     monkeypatch.setattr(pipeline.asyncio, "gather", _fake_gather)
-    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
     monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
     monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
     monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
@@ -3139,80 +3137,6 @@ def test_cleanup_cuda_memory_ignores_missing_cuda_and_empty_cache_errors(
     pipeline._cleanup_cuda_memory("cuda")  # noqa: SLF001
 
 
-def test_sentiment_score_uses_truncation_and_explicit_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: dict[str, Any] = {}
-
-    def _pipeline(task: str, **kwargs: Any):
-        calls["task"] = task
-        calls["factory_kwargs"] = dict(kwargs)
-
-        def _infer(text: str, **infer_kwargs: Any):
-            calls["text"] = text
-            calls["infer_kwargs"] = dict(infer_kwargs)
-            return [{"label": "positive", "score": 0.91}]
-
-        return _infer
-
-    fake_transformers = ModuleType("transformers")
-    fake_transformers.pipeline = _pipeline
-    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
-
-    score = pipeline._sentiment_score("x" * 5000)
-    assert score == 91
-    assert calls["task"] == "sentiment-analysis"
-    assert calls["factory_kwargs"] == {
-        "model": "distilbert/distilbert-base-uncased-finetuned-sst-2-english",
-        "device": -1,
-    }
-    assert calls["text"] == "x" * 4000
-    assert calls["infer_kwargs"] == {"truncation": True, "max_length": 512}
-
-
-@pytest.mark.parametrize(
-    ("label", "value", "expected"),
-    [
-        ("negative", 0.2, 80),
-        ("neutral", 0.7, 50),
-    ],
-)
-def test_sentiment_score_negative_and_fallback_labels(
-    monkeypatch: pytest.MonkeyPatch,
-    label: str,
-    value: float,
-    expected: int,
-) -> None:
-    def _pipeline(_task: str, **_kwargs: Any):
-        return lambda *_a, **_k: [{"label": label, "score": value}]
-
-    fake_transformers = ModuleType("transformers")
-    fake_transformers.pipeline = _pipeline
-    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
-
-    assert pipeline._sentiment_score("hello") == expected
-
-
-def test_sentiment_score_returns_neutral_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
-    warnings: list[str] = []
-
-    def _pipeline(_task: str, **_kwargs: Any):
-        def _boom(*_args: Any, **_infer_kwargs: Any):
-            raise RuntimeError("model failed")
-
-        return _boom
-
-    fake_transformers = ModuleType("transformers")
-    fake_transformers.pipeline = _pipeline
-    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
-    monkeypatch.setattr(
-        pipeline._logger,
-        "warning",
-        lambda message, *args: warnings.append(message % args),
-    )
-
-    assert pipeline._sentiment_score("hello") == 0.0
-    assert warnings == ["Sentiment scoring failed (RuntimeError); using neutral score"]
-
-
 @pytest.mark.asyncio
 async def test_emit_progress_awaitable_and_error_branches() -> None:
     events: list[tuple[str, float]] = []
@@ -3335,7 +3259,6 @@ async def test_run_pipeline_logs_flicker_speaker_reassignment(
             {"language": "en", "language_probability": 0.95},
         ),
     )
-    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
     monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
     monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
     monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
@@ -3385,7 +3308,6 @@ async def test_run_pipeline_backfills_detected_language_and_uses_fallback_diariz
             {"language": "unknown", "language_probability": 0.2},
         ),
     )
-    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
     monkeypatch.setattr(
         pipeline,
         "export_speaker_snippets",
@@ -3462,7 +3384,6 @@ async def test_run_pipeline_restores_previous_whisperx_transcriber_session(
         lambda **_kwargs: _session_transcriber,
     )
     monkeypatch.setattr(pipeline, "run_language_aware_asr", _fake_run_language_aware_asr)
-    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
     monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
     monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
     monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
@@ -3533,7 +3454,6 @@ async def test_run_pipeline_preserves_previous_session_flag(
         lambda **_kwargs: _session_transcriber,
     )
     monkeypatch.setattr(pipeline, "run_language_aware_asr", _fake_run_language_aware_asr)
-    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
     monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
     monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
     monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
@@ -3599,7 +3519,6 @@ async def test_run_pipeline_tolerates_session_transcriber_cleanup_before_restore
         lambda **_kwargs: _session_transcriber,
     )
     monkeypatch.setattr(pipeline, "run_language_aware_asr", _fake_run_language_aware_asr)
-    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
     monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
     monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
     monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
@@ -3631,7 +3550,6 @@ async def test_run_pipeline_skips_noise_detection_when_disabled(
             {"language": "en", "language_probability": 0.95},
         ),
     )
-    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
     monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
     monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
     monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
@@ -3668,7 +3586,6 @@ async def test_run_pipeline_filters_noise_speakers_from_transcript(
             {"language": "en", "language_probability": 0.95},
         ),
     )
-    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
     monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
     monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
     monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
@@ -3777,7 +3694,6 @@ async def test_run_pipeline_preserves_inputs_when_noise_labels_stale(
             {"language": "en", "language_probability": 0.95},
         ),
     )
-    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
     monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
     monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
     monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
@@ -3865,11 +3781,6 @@ async def test_run_pipeline_returns_no_speech_when_all_turns_flagged_as_noise(
         pipeline,
         "update_diarization_metadata_with_noise",
         lambda *_a, **_k: None,
-    )
-    monkeypatch.setattr(
-        pipeline,
-        "_sentiment_score",
-        lambda _t: pytest.fail("Sentiment must not run when all turns filtered"),
     )
     monkeypatch.setattr(
         pipeline,

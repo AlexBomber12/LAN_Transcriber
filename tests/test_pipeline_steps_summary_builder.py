@@ -14,6 +14,7 @@ def test_build_summary_payload_valid_json_uses_schema():
                 "summary_bullets": ["Discussed rollout"],
                 "decisions": ["Ship Friday"],
                 "action_items": [{"task": "Send recap", "owner": "Alex", "deadline": "2026-03-01", "confidence": 0.9}],
+                "tone_score": 72,
                 "emotional_summary": "Focused and positive.",
                 "questions": {"total_count": 1, "types": {"status": 1}, "extracted": ["Is QA done?"]},
             }
@@ -25,6 +26,8 @@ def test_build_summary_payload_valid_json_uses_schema():
 
     assert payload["topic"] == "Sync"
     assert payload["action_items"][0]["owner"] == "Alex"
+    assert payload["friendly"] == 72
+    assert payload["tone_score"] == 72
     assert payload.get("parse_error") is None
 
 
@@ -83,3 +86,46 @@ def test_build_summary_payload_empty_content_uses_default_summary_bullet() -> No
     assert payload["parse_error"] is True
     assert payload["summary_bullets"] == ["No summary available."]
     assert payload["summary"] == "- No summary available."
+
+
+def test_build_summary_payload_uses_friendly_fallback_when_tone_score_missing() -> None:
+    payload = build_summary_payload(
+        raw_llm_content=json.dumps(
+            {
+                "topic": "Fallback",
+                "summary_bullets": ["Still valid"],
+                "decisions": [],
+                "action_items": [],
+                "emotional_summary": "Neutral.",
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        ),
+        model="m",
+        target_summary_language="en",
+        friendly=33,
+    )
+
+    assert payload["friendly"] == 33
+    assert payload["tone_score"] == 33
+
+
+def test_build_summary_payload_uses_friendly_fallback_when_tone_score_blank() -> None:
+    payload = build_summary_payload(
+        raw_llm_content=json.dumps(
+            {
+                "topic": "Fallback",
+                "summary_bullets": ["Still valid"],
+                "decisions": [],
+                "action_items": [],
+                "tone_score": "",
+                "emotional_summary": "Neutral.",
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        ),
+        model="m",
+        target_summary_language="en",
+        friendly=41,
+    )
+
+    assert payload["friendly"] == 41
+    assert payload["tone_score"] == 41

@@ -220,7 +220,6 @@ def _patch_pipeline_dependencies(
             speaker_count_after=1 if turns else 0,
         ),
     )
-    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_sentiment_score", lambda _text: 7)
     monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_use_chunked_llm", lambda *_a, **_k: False)
     monkeypatch.setattr(worker_tasks, "build_structured_summary_prompts", lambda *_a, **_k: ("sys", "user"))
 
