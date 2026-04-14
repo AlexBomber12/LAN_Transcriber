@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import httpx
 import json
 from pathlib import Path
 import sqlite3
@@ -1615,6 +1616,99 @@ def test_cancel_aware_llm_client_inline_runtime_error_propagates(tmp_path: Path)
                 user_prompt="user",
             )
         )
+
+
+def test_cancel_aware_llm_client_normalizes_inline_connect_error(tmp_path: Path) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-inline-llm-7",
+        source="test",
+        source_filename="llm-connect.wav",
+        settings=cfg,
+    )
+
+    class _ConnectErrorClient:
+        async def generate(self, *_args, **_kwargs):
+            request = httpx.Request("POST", "http://127.0.0.1:8000/v1/chat/completions")
+            raise httpx.ConnectError("connect boom", request=request)
+
+    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
+        base_client=_ConnectErrorClient(),
+        recording_id="rec-stop-inline-llm-7",
+        settings=cfg,
+        stage_name="llm_extract",
+        log_path=tmp_path / "logs" / "llm-connect.log",
+    )
+
+    with pytest.raises(ConnectionError, match="connect boom"):
+        asyncio.run(
+            llm_client.generate(
+                system_prompt="sys",
+                user_prompt="user",
+            )
+        )
+
+
+def test_cancel_aware_llm_client_normalizes_inline_http_status_error(tmp_path: Path) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-inline-llm-8",
+        source="test",
+        source_filename="llm-status.wav",
+        settings=cfg,
+    )
+
+    class _HttpStatusErrorClient:
+        async def generate(self, *_args, **_kwargs):
+            request = httpx.Request("POST", "http://127.0.0.1:8000/v1/chat/completions")
+            response = httpx.Response(502, request=request)
+            raise httpx.HTTPStatusError("bad gateway", request=request, response=response)
+
+    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
+        base_client=_HttpStatusErrorClient(),
+        recording_id="rec-stop-inline-llm-8",
+        settings=cfg,
+        stage_name="llm_extract",
+        log_path=tmp_path / "logs" / "llm-status.log",
+    )
+
+    with pytest.raises(RuntimeError, match="bad gateway"):
+        asyncio.run(
+            llm_client.generate(
+                system_prompt="sys",
+                user_prompt="user",
+            )
+        )
+
+
+def test_cancel_aware_llm_client_reraises_inline_baseexception(tmp_path: Path) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-inline-llm-9",
+        source="test",
+        source_filename="llm-baseexception.wav",
+        settings=cfg,
+    )
+
+    class _SentinelBaseException(BaseException):
+        pass
+
+    async def _raise_baseexception():
+        raise _SentinelBaseException("sentinel")
+
+    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
+        base_client=object(),
+        recording_id="rec-stop-inline-llm-9",
+        settings=cfg,
+        stage_name="llm_extract",
+        log_path=tmp_path / "logs" / "llm-baseexception.log",
+    )
+
+    with pytest.raises(_SentinelBaseException, match="sentinel"):
+        asyncio.run(llm_client._await_inline_generate(_raise_baseexception()))  # noqa: SLF001
 
 
 def test_execute_diarization_workflow_direct_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

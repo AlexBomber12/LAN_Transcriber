@@ -1,174 +1,153 @@
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index f7246e8..470e5a4 100644
+index 470e5a4..17b9d48 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -935,15 +935,6 @@ class _CancelAwareLLMClient:
-             parts.append(f"chunk_total={request_context.chunk_total}")
-         return " ".join(parts)
- 
--    def _request_timeout_seconds(self) -> float | None:
--        timeout_seconds = safe_float(
--            getattr(self._base_client, "timeout", None),
--            default=0.0,
--        )
--        if timeout_seconds <= 0:
--            return None
--        return timeout_seconds
--
-     async def _cancel_request_task(self, task: asyncio.Future[Any]) -> None:
-         if task.done():
-             return
-@@ -980,35 +971,18 @@ class _CancelAwareLLMClient:
- 
-     async def _await_inline_generate(self, awaitable: Any) -> Any:
-         request_context = self._request_context
--        timeout_seconds = self._request_timeout_seconds()
-         request_task = asyncio.ensure_future(awaitable)
--        deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
-         log_suffix = self._request_context_log_suffix(request_context)
-         start_perf = time.perf_counter()
--        start_message = f"llm request started {log_suffix}"
--        if timeout_seconds is not None:
--            start_message += f" timeout={timeout_seconds:g}s"
--        _append_step_log(self._log_path, start_message)
-+        _append_step_log(self._log_path, f"llm request started {log_suffix}")
-         try:
-             while True:
-                 self._raise_if_request_stop_requested(request_context=request_context)
--                wait_timeout = 0.1
--                if deadline is not None:
--                    remaining = max(deadline - time.monotonic(), 0.0)
--                    wait_timeout = min(wait_timeout, remaining)
--                try:
--                    result = await asyncio.wait_for(
--                        asyncio.shield(request_task),
--                        timeout=wait_timeout,
--                    )
--                    break
--                except asyncio.TimeoutError:
--                    if deadline is None:
--                        continue
--                    if time.monotonic() < deadline:
--                        continue
--                    await self._cancel_request_task(request_task)
--                    raise
-+                done, _pending = await asyncio.wait({request_task}, timeout=0.1)
-+                if not done:
-+                    continue
-+                result = await request_task
-+                break
-             self._raise_if_request_stop_requested(request_context=request_context)
-             elapsed_seconds = time.perf_counter() - start_perf
-             _append_step_log(
-@@ -1019,9 +993,6 @@ class _CancelAwareLLMClient:
-         except RecordingStopRequested:
-             _append_step_log(self._log_path, f"llm request cancelled {log_suffix}")
-             raise
--        except asyncio.TimeoutError:
--            _append_step_log(self._log_path, f"llm request timed out {log_suffix}")
--            raise
+@@ -573,6 +573,7 @@ def _rehydrate_child_operation_error(
+             "ReadError",
+             "RemoteProtocolError",
+             "ConnectionError",
++            "RequestError",
+         }:
+             return ConnectionError(message)
+         if error_type in {
+@@ -583,7 +584,11 @@ def _rehydrate_child_operation_error(
+             "TimeoutException",
+         }:
+             return TimeoutError(message)
+-        if error_type in {"LLMEmptyContentError", "LLMTruncatedResponseError"}:
++        if error_type in {
++            "LLMEmptyContentError",
++            "LLMTruncatedResponseError",
++            "HTTPStatusError",
++        }:
+             return RuntimeError(message)
+     builtins_ns = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
+     builtin_exc = builtins_ns.get(error_type)
+@@ -996,8 +1001,14 @@ class _CancelAwareLLMClient:
          except asyncio.CancelledError:
              await self._cancel_request_task(request_task)
              raise
+-        except BaseException:
++        except BaseException as exc:
+             await self._cancel_request_task(request_task)
++            if isinstance(exc, Exception):
++                raise _rehydrate_child_operation_error(
++                    operation_name="llm_generate",
++                    error_type=type(exc).__name__,
++                    error_message=str(exc) or type(exc).__name__,
++                ) from exc
+             raise
+ 
+     def generate(self, *args: Any, **kwargs: Any) -> Any:
 diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index 2174c65..1999f77 100644
+index 1999f77..ed31eae 100644
 --- a/tests/test_cov_lan_app_worker_tasks_branches.py
 +++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -1493,7 +1493,9 @@ def test_cancel_aware_llm_client_supports_positional_prompts_inline(
-     assert captured["kwargs"]["model"] == "test-model"
+@@ -2,6 +2,7 @@ from __future__ import annotations
  
- 
--def test_cancel_aware_llm_client_times_out_inline_requests(tmp_path: Path) -> None:
-+def test_cancel_aware_llm_client_does_not_impose_outer_timeout_from_base_client(
-+    tmp_path: Path,
-+) -> None:
-     cfg = _db_settings(tmp_path)
-     init_db(cfg)
-     create_recording(
-@@ -1506,15 +1508,9 @@ def test_cancel_aware_llm_client_times_out_inline_requests(tmp_path: Path) -> No
-     class _SlowInlineClient:
-         timeout = 0.05
- 
--        def __init__(self) -> None:
--            self.cancelled = False
--
-         async def generate(self, *_args, **_kwargs):
--            try:
--                await asyncio.Future()
--            except asyncio.CancelledError:
--                self.cancelled = True
--                raise
-+            await asyncio.sleep(0.1)
-+            return {"role": "assistant", "content": "ok"}
- 
-     slow_client = _SlowInlineClient()
-     llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
-@@ -1525,59 +1521,19 @@ def test_cancel_aware_llm_client_times_out_inline_requests(tmp_path: Path) -> No
-         log_path=tmp_path / "logs" / "llm-timeout.log",
-     )
- 
--    with pytest.raises(asyncio.TimeoutError):
--        asyncio.run(
--            llm_client.generate(
--                system_prompt="sys",
--                user_prompt="user",
--            )
-+    result = asyncio.run(
-+        llm_client.generate(
-+            system_prompt="sys",
-+            user_prompt="user",
+ import asyncio
+ import builtins
++import httpx
+ import json
+ from pathlib import Path
+ import sqlite3
+@@ -1617,6 +1618,99 @@ def test_cancel_aware_llm_client_inline_runtime_error_propagates(tmp_path: Path)
          )
--
--    assert slow_client.cancelled is True
--    assert "llm request timed out checkpoint=before_llm_request" in (
--        tmp_path / "logs" / "llm-timeout.log"
--    ).read_text(encoding="utf-8")
--
--
--def test_cancel_aware_llm_client_retries_poll_timeout_without_deadline(
--    tmp_path: Path,
--    monkeypatch: pytest.MonkeyPatch,
--) -> None:
--    cfg = _db_settings(tmp_path)
--    init_db(cfg)
--    create_recording(
--        "rec-stop-inline-llm-3",
--        source="test",
--        source_filename="llm-poll.wav",
--        settings=cfg,
-     )
- 
--    class _InlineClient:
--        timeout = None
--
--    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
--        base_client=_InlineClient(),
--        recording_id="rec-stop-inline-llm-3",
--        settings=cfg,
--        stage_name="llm_extract",
--        log_path=tmp_path / "logs" / "llm-poll.log",
--    )
--    original_wait_for = worker_tasks.asyncio.wait_for
--    wait_calls = {"count": 0}
--
--    async def _fake_wait_for(awaitable, timeout):
--        wait_calls["count"] += 1
--        if wait_calls["count"] == 1:
--            raise asyncio.TimeoutError
--        return await original_wait_for(awaitable, timeout=timeout)
--
--    async def _done() -> dict[str, str]:
--        return {"role": "assistant", "content": "ok"}
--
--    monkeypatch.setattr(worker_tasks.asyncio, "wait_for", _fake_wait_for)
--    result = asyncio.run(llm_client._await_inline_generate(_done()))  # noqa: SLF001
-     assert result == {"role": "assistant", "content": "ok"}
--    assert wait_calls["count"] == 2
-+    log_text = (
-+        tmp_path / "logs" / "llm-timeout.log"
-+    ).read_text(encoding="utf-8")
-+    assert "llm request started checkpoint=before_llm_request" in log_text
-+    assert "llm request completed checkpoint=before_llm_request" in log_text
  
  
- def test_cancel_aware_llm_client_inline_cancelled_error_cleans_request_task(tmp_path: Path) -> None:
++def test_cancel_aware_llm_client_normalizes_inline_connect_error(tmp_path: Path) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-inline-llm-7",
++        source="test",
++        source_filename="llm-connect.wav",
++        settings=cfg,
++    )
++
++    class _ConnectErrorClient:
++        async def generate(self, *_args, **_kwargs):
++            request = httpx.Request("POST", "http://127.0.0.1:8000/v1/chat/completions")
++            raise httpx.ConnectError("connect boom", request=request)
++
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=_ConnectErrorClient(),
++        recording_id="rec-stop-inline-llm-7",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm-connect.log",
++    )
++
++    with pytest.raises(ConnectionError, match="connect boom"):
++        asyncio.run(
++            llm_client.generate(
++                system_prompt="sys",
++                user_prompt="user",
++            )
++        )
++
++
++def test_cancel_aware_llm_client_normalizes_inline_http_status_error(tmp_path: Path) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-inline-llm-8",
++        source="test",
++        source_filename="llm-status.wav",
++        settings=cfg,
++    )
++
++    class _HttpStatusErrorClient:
++        async def generate(self, *_args, **_kwargs):
++            request = httpx.Request("POST", "http://127.0.0.1:8000/v1/chat/completions")
++            response = httpx.Response(502, request=request)
++            raise httpx.HTTPStatusError("bad gateway", request=request, response=response)
++
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=_HttpStatusErrorClient(),
++        recording_id="rec-stop-inline-llm-8",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm-status.log",
++    )
++
++    with pytest.raises(RuntimeError, match="bad gateway"):
++        asyncio.run(
++            llm_client.generate(
++                system_prompt="sys",
++                user_prompt="user",
++            )
++        )
++
++
++def test_cancel_aware_llm_client_reraises_inline_baseexception(tmp_path: Path) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-inline-llm-9",
++        source="test",
++        source_filename="llm-baseexception.wav",
++        settings=cfg,
++    )
++
++    class _SentinelBaseException(BaseException):
++        pass
++
++    async def _raise_baseexception():
++        raise _SentinelBaseException("sentinel")
++
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=object(),
++        recording_id="rec-stop-inline-llm-9",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm-baseexception.log",
++    )
++
++    with pytest.raises(_SentinelBaseException, match="sentinel"):
++        asyncio.run(llm_client._await_inline_generate(_raise_baseexception()))  # noqa: SLF001
++
++
+ def test_execute_diarization_workflow_direct_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+     cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
+     annotation = object()

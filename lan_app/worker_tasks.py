@@ -573,6 +573,7 @@ def _rehydrate_child_operation_error(
             "ReadError",
             "RemoteProtocolError",
             "ConnectionError",
+            "RequestError",
         }:
             return ConnectionError(message)
         if error_type in {
@@ -583,7 +584,11 @@ def _rehydrate_child_operation_error(
             "TimeoutException",
         }:
             return TimeoutError(message)
-        if error_type in {"LLMEmptyContentError", "LLMTruncatedResponseError"}:
+        if error_type in {
+            "LLMEmptyContentError",
+            "LLMTruncatedResponseError",
+            "HTTPStatusError",
+        }:
             return RuntimeError(message)
     builtins_ns = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
     builtin_exc = builtins_ns.get(error_type)
@@ -996,8 +1001,14 @@ class _CancelAwareLLMClient:
         except asyncio.CancelledError:
             await self._cancel_request_task(request_task)
             raise
-        except BaseException:
+        except BaseException as exc:
             await self._cancel_request_task(request_task)
+            if isinstance(exc, Exception):
+                raise _rehydrate_child_operation_error(
+                    operation_name="llm_generate",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc) or type(exc).__name__,
+                ) from exc
             raise
 
     def generate(self, *args: Any, **kwargs: Any) -> Any:
