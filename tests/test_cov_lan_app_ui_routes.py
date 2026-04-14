@@ -12,6 +12,7 @@ import pytest
 from starlette.requests import Request
 
 from lan_app import api, ui_routes
+import lan_app.resummarize as resummarize_module
 from lan_app.calendar.service import CalendarSyncError
 from lan_app.config import AppSettings
 from lan_app.constants import (
@@ -3655,12 +3656,9 @@ def test_resummarize_recording_default_turn_and_attendees_paths(
     )
 
     monkeypatch.setattr(
-        ui_routes, "_fallback_speaker_turns_from_transcript", lambda *_a, **_k: []
-    )
-    monkeypatch.setattr(
-        ui_routes,
-        "PipelineSettings",
-        lambda **kwargs: type("S", (), {"llm_model": "test-model", **kwargs})(),
+        resummarize_module,
+        "_fallback_speaker_turns_from_transcript",
+        lambda *_a, **_k: [],
     )
     prompts_seen: dict[str, Any] = {}
 
@@ -3680,15 +3678,21 @@ def test_resummarize_recording_default_turn_and_attendees_paths(
     def _write_json(path: Path, payload: dict[str, Any]) -> None:
         writes[path] = dict(payload)
 
-    monkeypatch.setattr(ui_routes, "build_structured_summary_prompts", _prompts)
-    monkeypatch.setattr(ui_routes, "LLMClient", lambda: _FakeLLM())
     monkeypatch.setattr(
-        ui_routes,
+        resummarize_module, "build_structured_summary_prompts", _prompts
+    )
+    monkeypatch.setattr(resummarize_module, "LLMClient", lambda: _FakeLLM())
+    monkeypatch.setattr(
+        resummarize_module,
         "build_summary_payload",
         lambda **_k: {"summary": "ok", "friendly": 0},
     )
-    monkeypatch.setattr(ui_routes, "atomic_write_json", _write_json)
-    monkeypatch.setattr(ui_routes, "refresh_recording_metrics", lambda *_a, **_k: None)
+    monkeypatch.setattr(resummarize_module, "atomic_write_json", _write_json)
+    monkeypatch.setattr(
+        resummarize_module,
+        "refresh_recording_metrics",
+        lambda *_a, **_k: None,
+    )
 
     ui_routes._resummarize_recording(
         recording_id, settings=cfg, target_summary_language=None
@@ -3739,12 +3743,9 @@ def test_resummarize_recording_prefers_selected_calendar_context(
     (derived / "summary.json").write_text(json.dumps({"friendly": 0}), encoding="utf-8")
 
     monkeypatch.setattr(
-        ui_routes, "_fallback_speaker_turns_from_transcript", lambda *_a, **_k: []
-    )
-    monkeypatch.setattr(
-        ui_routes,
-        "PipelineSettings",
-        lambda **kwargs: type("S", (), {"llm_model": "test-model", **kwargs})(),
+        resummarize_module,
+        "_fallback_speaker_turns_from_transcript",
+        lambda *_a, **_k: [],
     )
     prompts_seen: dict[str, Any] = {}
 
@@ -3760,15 +3761,21 @@ def test_resummarize_recording_prefers_selected_calendar_context(
         async def generate(self, **_kwargs: Any) -> dict[str, str]:
             return {"content": '{"summary":"ok"}'}
 
-    monkeypatch.setattr(ui_routes, "build_structured_summary_prompts", _prompts)
-    monkeypatch.setattr(ui_routes, "LLMClient", lambda: _FakeLLM())
     monkeypatch.setattr(
-        ui_routes,
+        resummarize_module, "build_structured_summary_prompts", _prompts
+    )
+    monkeypatch.setattr(resummarize_module, "LLMClient", lambda: _FakeLLM())
+    monkeypatch.setattr(
+        resummarize_module,
         "build_summary_payload",
         lambda **_k: {"summary": "ok", "friendly": 0},
     )
-    monkeypatch.setattr(ui_routes, "atomic_write_json", lambda *_a, **_k: None)
-    monkeypatch.setattr(ui_routes, "refresh_recording_metrics", lambda *_a, **_k: None)
+    monkeypatch.setattr(resummarize_module, "atomic_write_json", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        resummarize_module,
+        "refresh_recording_metrics",
+        lambda *_a, **_k: None,
+    )
 
     ui_routes._resummarize_recording(  # noqa: SLF001
         "rec-resummarize-selected-cal",
@@ -3798,30 +3805,189 @@ def test_resummarize_recording_uses_existing_speaker_turns(
     (derived / "summary.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(
-        ui_routes,
-        "PipelineSettings",
-        lambda **kwargs: type("S", (), {"llm_model": "test-model", **kwargs})(),
-    )
-    monkeypatch.setattr(
-        ui_routes, "build_structured_summary_prompts", lambda *_a, **_k: ("sys", "usr")
+        resummarize_module,
+        "build_structured_summary_prompts",
+        lambda *_a, **_k: ("sys", "usr"),
     )
 
     class _FakeLLM:
         async def generate(self, **_kwargs: Any) -> dict[str, str]:
             return {"content": '{"summary":"ok"}'}
 
-    monkeypatch.setattr(ui_routes, "LLMClient", lambda: _FakeLLM())
+    monkeypatch.setattr(resummarize_module, "LLMClient", lambda: _FakeLLM())
     monkeypatch.setattr(
-        ui_routes,
+        resummarize_module,
         "build_summary_payload",
         lambda **_k: {"summary": "ok", "friendly": 1},
     )
-    monkeypatch.setattr(ui_routes, "atomic_write_json", lambda *_a, **_k: None)
-    monkeypatch.setattr(ui_routes, "refresh_recording_metrics", lambda *_a, **_k: None)
+    monkeypatch.setattr(resummarize_module, "atomic_write_json", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        resummarize_module,
+        "refresh_recording_metrics",
+        lambda *_a, **_k: None,
+    )
 
     ui_routes._resummarize_recording(
         recording_id, settings=cfg, target_summary_language="en"
     )  # noqa: SLF001
+
+
+def test_chunk_text_for_turns_and_resummarize_helpers_cover_edge_paths(
+    tmp_path: Path,
+) -> None:
+    assert ui_routes._chunk_text_for_turns("") == []  # noqa: SLF001
+    assert ui_routes._chunk_text_for_turns("alpha beta", chunk_size=5) == [  # noqa: SLF001
+        "alpha",
+        "beta",
+    ]
+    assert ui_routes._chunk_text_for_turns("ab cd ef", chunk_size=5) == [  # noqa: SLF001
+        "ab cd",
+        "ef",
+    ]
+    assert ui_routes._chunk_text_for_turns("x" * 7, chunk_size=3) == [  # noqa: SLF001
+        "xxx",
+        "xxx",
+        "x",
+    ]
+    assert resummarize_module._chunk_text_for_turns("") == []  # noqa: SLF001
+    assert resummarize_module._chunk_text_for_turns(  # noqa: SLF001
+        "alpha beta gamma",
+        chunk_size=10,
+    ) == ["alpha beta", "gamma"]
+    assert resummarize_module._chunk_text_for_turns("x" * 7, chunk_size=3) == [  # noqa: SLF001
+        "xxx",
+        "xxx",
+        "x",
+    ]
+
+    missing = tmp_path / "missing.json"
+    assert resummarize_module._load_json_dict(missing) == {}  # noqa: SLF001
+    assert resummarize_module._load_json_list(missing) == []  # noqa: SLF001
+
+    bad_dict = tmp_path / "bad-dict.json"
+    bad_dict.write_text("{", encoding="utf-8")
+    assert resummarize_module._load_json_dict(bad_dict) == {}  # noqa: SLF001
+
+    wrong_dict = tmp_path / "wrong-dict.json"
+    wrong_dict.write_text("[1, 2]", encoding="utf-8")
+    assert resummarize_module._load_json_dict(wrong_dict) == {}  # noqa: SLF001
+
+    bad_list = tmp_path / "bad-list.json"
+    bad_list.write_text("{", encoding="utf-8")
+    assert resummarize_module._load_json_list(bad_list) == []  # noqa: SLF001
+
+    wrong_list = tmp_path / "wrong-list.json"
+    wrong_list.write_text('{"k": 1}', encoding="utf-8")
+    assert resummarize_module._load_json_list(wrong_list) == []  # noqa: SLF001
+
+    assert resummarize_module._llm_message_content({"content": "ok"}) == "ok"  # noqa: SLF001
+    assert resummarize_module._llm_message_content("plain") == "plain"  # noqa: SLF001
+
+    segment_fallback = resummarize_module._fallback_speaker_turns_from_transcript(  # noqa: SLF001
+        {
+            "segments": [
+                "bad-row",
+                {"text": "   "},
+                {"start": "bad", "end": "still-bad", "text": "hello", "language": "it"},
+            ]
+        }
+    )
+    assert segment_fallback == [
+        {
+            "start": 0.0,
+            "end": 0.0,
+            "speaker": "S1",
+            "text": "hello",
+            "language": "it",
+        }
+    ]
+
+    text_fallback = resummarize_module._fallback_speaker_turns_from_transcript(  # noqa: SLF001
+        {"segments": [], "text": "hello world"}
+    )
+    assert text_fallback == [
+        {
+            "start": 0.0,
+            "end": 1.0,
+            "speaker": "S1",
+            "text": "hello world",
+        }
+    ]
+
+    non_list_segments_fallback = resummarize_module._fallback_speaker_turns_from_transcript(  # noqa: SLF001
+        {"segments": "bad", "text": "fallback text"}
+    )
+    assert non_list_segments_fallback == [
+        {
+            "start": 0.0,
+            "end": 1.0,
+            "speaker": "S1",
+            "text": "fallback text",
+        }
+    ]
+
+
+def test_resummarize_recording_supports_sync_llm_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    recording_id = "rec-resummarize-sync-llm"
+    derived = cfg.recordings_root / recording_id / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps(
+            {
+                "text": "hello there",
+                "segments": [
+                    {"start": 0.0, "end": 1.0, "text": "hello", "language": "en"},
+                    {"start": 1.0, "end": 2.0, "text": "there", "language": "en"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "summary.json").write_text(
+        json.dumps({"friendly": 1}),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, Any] = {}
+
+    def _prompts(
+        turns: list[dict[str, Any]], *_a: Any, **kwargs: Any
+    ) -> tuple[str, str]:
+        captured["turns"] = turns
+        captured["calendar_title"] = kwargs.get("calendar_title")
+        return "sys", "usr"
+
+    class _SyncLLM:
+        def generate(self, **_kwargs: Any) -> dict[str, str]:
+            return {"content": '{"summary":"sync"}'}
+
+    monkeypatch.setattr(
+        resummarize_module, "build_structured_summary_prompts", _prompts
+    )
+    monkeypatch.setattr(
+        resummarize_module,
+        "build_summary_payload",
+        lambda **_k: {"summary": "sync", "friendly": 1},
+    )
+    monkeypatch.setattr(
+        resummarize_module,
+        "refresh_recording_metrics",
+        lambda *_a, **_k: None,
+    )
+
+    payload = resummarize_module.resummarize_recording(
+        recording_id,
+        settings=cfg,
+        target_summary_language="en",
+        llm_client=_SyncLLM(),
+    )
+
+    assert payload["summary"] == "sync"
+    assert captured["turns"][0]["text"] == "hello"
 
 
 def test_datetime_and_calendar_parse_errors(
@@ -4562,7 +4728,7 @@ def test_language_action_error_paths(
 
     assert c.post("/ui/recordings/missing/language/resummarize").status_code == 404
     bad_resummarize = c.post(f"/ui/recordings/{recording_id}/language/resummarize")
-    assert bad_resummarize.status_code == 422
+    assert bad_resummarize.status_code == 503
 
     monkeypatch.setattr(
         ui_routes,
@@ -4570,12 +4736,23 @@ def test_language_action_error_paths(
         lambda *_a, **_k: (None, None),
     )
 
-    async def _raise_resummarize(*_args: Any, **_kwargs: Any) -> Any:
-        raise RuntimeError("summarize down")
-
-    monkeypatch.setattr(ui_routes, "run_in_threadpool", _raise_resummarize)
+    monkeypatch.setattr(
+        ui_routes,
+        "enqueue_recording_resummarize_job",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("summarize down")),
+    )
     re_summary_error = c.post(f"/ui/recordings/{recording_id}/language/resummarize")
     assert re_summary_error.status_code == 503
+
+    monkeypatch.setattr(
+        ui_routes,
+        "enqueue_recording_resummarize_job",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            DuplicateRecordingJobError(recording_id=recording_id, job_id="job-dup")
+        ),
+    )
+    re_summary_dup = c.post(f"/ui/recordings/{recording_id}/language/resummarize")
+    assert re_summary_dup.status_code == 409
 
     assert c.post("/ui/recordings/missing/language/retranscribe").status_code == 404
     monkeypatch.setattr(

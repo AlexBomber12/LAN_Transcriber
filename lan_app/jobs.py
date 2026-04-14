@@ -13,6 +13,8 @@ from .config import AppSettings
 from .constants import (
     DEFAULT_REQUEUE_JOB_TYPE,
     JOB_STATUS_QUEUED,
+    JOB_TYPE_LLM,
+    JOB_TYPE_PRECHECK,
     JOB_TYPES,
     RECORDING_STATUS_QUEUED,
 )
@@ -23,6 +25,7 @@ from .db import (
     create_job_if_no_active_for_recording,
     create_job,
     fail_job,
+    find_active_job_for_recording,
     get_recording,
     init_db,
     list_jobs,
@@ -227,9 +230,83 @@ def enqueue_recording_job(
     return RecordingJob(job_id=job_id, recording_id=recording_id, job_type=job_type)
 
 
+def enqueue_recording_resummarize_job(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> RecordingJob:
+    cfg = settings or AppSettings()
+    init_db(cfg)
+    if get_recording(recording_id, settings=cfg) is None:
+        raise RecordingNotFoundError(f"Recording not found: {recording_id}")
+    for active_job_type in (JOB_TYPE_PRECHECK, JOB_TYPE_LLM):
+        if active_job_type == JOB_TYPE_LLM:
+            continue
+        existing = find_active_job_for_recording(
+            recording_id,
+            job_type=active_job_type,
+            settings=cfg,
+        )
+        if existing is None:
+            continue
+        existing_job_id = str(existing.get("id") or "").strip()
+        if existing_job_id:
+            raise DuplicateRecordingJobError(
+                recording_id=recording_id,
+                job_id=existing_job_id,
+            )
+
+    job_id = uuid4().hex
+    _created, existing = create_job_if_no_active_for_recording(
+        job_id=job_id,
+        recording_id=recording_id,
+        job_type=JOB_TYPE_LLM,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+    if existing is not None:
+        existing_job_id = str(existing.get("id") or "").strip()
+        if existing_job_id:
+            raise DuplicateRecordingJobError(
+                recording_id=recording_id,
+                job_id=existing_job_id,
+            )
+
+    from .worker_tasks import process_job
+
+    queue = get_queue(cfg)
+    try:
+        queue.enqueue(
+            process_job,
+            job_id,
+            recording_id,
+            JOB_TYPE_LLM,
+            job_id=job_id,
+            job_timeout=cfg.rq_job_timeout_seconds,
+            resummarize_only=True,
+        )
+    except Exception as exc:
+        try:
+            fail_job(
+                job_id,
+                error=f"queue enqueue failed: {exc}",
+                settings=cfg,
+            )
+        except Exception:
+            pass
+        raise
+
+    clear_recording_cancel_request(
+        recording_id,
+        settings=cfg,
+    )
+    return RecordingJob(job_id=job_id, recording_id=recording_id, job_type=JOB_TYPE_LLM)
+
+
 __all__ = [
     "cancel_pending_queue_job",
     "DuplicateRecordingJobError",
+    "enqueue_recording_resummarize_job",
     "RecordingJob",
     "RecordingNotFoundError",
     "enqueue_recording_job",

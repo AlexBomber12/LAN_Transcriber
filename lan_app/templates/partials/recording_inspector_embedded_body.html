@@ -69,6 +69,13 @@
 
 {% elif current_tab == 'summary' %}
   {% set summary_data = summary or {} %}
+  {% set refresh = summary_data.refresh or {} %}
+  {% if refresh.active %}
+  <div class="mb-3.5 border border-blue-200 bg-blue-50 text-blue-900 rounded-xl px-3.5 py-3 flex items-center gap-2">
+    <span class="inline-flex size-2 rounded-full bg-blue-500 animate-pulse"></span>
+    <span>{{ refresh.message or 'Regenerating summary...' }}</span>
+  </div>
+  {% endif %}
   <div class="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(180px,1fr))]">
     <section class="border border-slate-200 rounded-xl bg-slate-50 p-4">
       <h3 class="text-sm font-bold mb-2">Topic</h3>

@@ -84,6 +84,7 @@ from .constants import (
     JOB_STATUS_QUEUED,
     JOB_STATUS_STARTED,
     JOB_TYPE_CLEANUP,
+    JOB_TYPE_LLM,
     JOB_TYPE_PRECHECK,
     JOB_TYPE_PUBLISH,
     JOB_TYPES,
@@ -141,6 +142,7 @@ from .pipeline_stages import (
     PIPELINE_STAGE_STATUS_SKIPPED,
     validate_stage_artifacts,
 )
+from .resummarize import resummarize_recording
 from .routing import refresh_recording_routing
 
 _logger = logging.getLogger(__name__)
@@ -4384,12 +4386,135 @@ def _apply_force_reprocess_cleanup(
         pass
 
 
+def _process_resummarize_only_job(
+    *,
+    job_id: str,
+    recording_id: str,
+    settings: AppSettings,
+    log_path: Path,
+) -> dict[str, str]:
+    if not _start_job_or_ignore_stale_execution(
+        job_id=job_id,
+        recording_id=recording_id,
+        job_type=JOB_TYPE_LLM,
+        settings=settings,
+        log_path=log_path,
+    ):
+        return _ignored_result(job_id, recording_id, JOB_TYPE_LLM)
+
+    if get_recording(recording_id, settings=settings) is None:
+        raise ValueError(f"Recording not found: {recording_id}")
+
+    _append_step_log(log_path, f"started job={job_id} type={JOB_TYPE_LLM}")
+    stage_metadata = {"operation": "resummarize_only"}
+    try:
+        _raise_if_stop_requested(
+            recording_id=recording_id,
+            settings=settings,
+            stage_name="llm_extract",
+            checkpoint="before_stage",
+        )
+        mark_recording_pipeline_stage_started(
+            recording_id,
+            stage_name="llm_extract",
+            metadata=stage_metadata,
+            settings=settings,
+        )
+        summary_payload = resummarize_recording(
+            recording_id,
+            settings=settings,
+            target_summary_language=None,
+            llm_client=_CancelAwareLLMClient(
+                base_client=LLMClient(),
+                recording_id=recording_id,
+                settings=settings,
+                stage_name="llm_extract",
+                log_path=log_path,
+            ),
+        )
+        current_job_status = _job_status(job_id, settings)
+        if current_job_status != JOB_STATUS_STARTED:
+            _log_stale_inflight_execution(
+                job_id=job_id,
+                job_type=JOB_TYPE_LLM,
+                log_path=log_path,
+                detail=f"status={current_job_status or 'missing'}",
+            )
+            return _ignored_result(job_id, recording_id, JOB_TYPE_LLM)
+        mark_recording_pipeline_stage_completed(
+            recording_id,
+            stage_name="llm_extract",
+            metadata={
+                **stage_metadata,
+                "friendly": int((summary_payload or {}).get("friendly") or 0),
+                "summary_status": str((summary_payload or {}).get("status") or "ok"),
+            },
+            settings=settings,
+        )
+        if not finish_job_if_started(job_id, settings=settings):
+            raise ValueError(f"Job not found: {job_id}")
+        return {
+            "job_id": job_id,
+            "recording_id": recording_id,
+            "job_type": JOB_TYPE_LLM,
+            "status": "finished",
+        }
+    except RecordingStopRequested as stop:
+        _log_stop_requested(log_path=log_path, stop=stop)
+        mark_recording_pipeline_stage_cancelled(
+            recording_id,
+            stage_name="llm_extract",
+            metadata={
+                **stage_metadata,
+                "cancel_checkpoint": stop.checkpoint,
+                "cancel_chunk_index": stop.chunk_index,
+                "cancel_chunk_total": stop.chunk_total,
+            },
+            settings=settings,
+        )
+        _acknowledge_stop_requested(
+            recording_id=recording_id,
+            settings=settings,
+            reason_text=stop.acknowledged_reason_text,
+        )
+        finish_job_if_started(
+            job_id,
+            settings=settings,
+            error="cancelled_by_user",
+        )
+        return {
+            "job_id": job_id,
+            "recording_id": recording_id,
+            "job_type": JOB_TYPE_LLM,
+            "status": "stopped",
+        }
+    except Exception as exc:
+        root_cause = root_cause_from_exception(exc)
+        mark_recording_pipeline_stage_failed(
+            recording_id,
+            stage_name="llm_extract",
+            error_code=root_cause.code,
+            error_text=root_cause.detail,
+            metadata=stage_metadata,
+            settings=settings,
+        )
+        if not fail_job_if_started(job_id, str(exc), settings=settings):
+            raise
+        return {
+            "job_id": job_id,
+            "recording_id": recording_id,
+            "job_type": JOB_TYPE_LLM,
+            "status": "failed",
+        }
+
+
 def process_job(
     job_id: str,
     recording_id: str,
     job_type: str,
     *,
     force_reprocess: bool = False,
+    resummarize_only: bool = False,
 ) -> dict[str, str]:
     """Execute a queue job and persist lifecycle state transitions."""
 
@@ -4399,6 +4524,14 @@ def process_job(
     settings = AppSettings()
     init_db(settings)
     log_path = _step_log_path(recording_id, job_type, settings)
+
+    if job_type == JOB_TYPE_LLM and resummarize_only:
+        return _process_resummarize_only_job(
+            job_id=job_id,
+            recording_id=recording_id,
+            settings=settings,
+            log_path=log_path,
+        )
 
     if job_type != JOB_TYPE_PRECHECK:
         recording_before = get_recording(recording_id, settings=settings) or {}

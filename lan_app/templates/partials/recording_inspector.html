@@ -16,7 +16,14 @@
 <div class="{% if recording_inspector.embedded %}grid gap-3.5{% else %}mt-6{% endif %}">
 {% include "partials/recording_inspector_tabs.html" %}
 
-<div class="{% if recording_inspector.embedded %}border border-slate-200 rounded-xl bg-white p-4 shadow-sm{% else %}mt-6{% endif %}">
+<div
+  class="{% if recording_inspector.embedded %}border border-slate-200 rounded-xl bg-white p-4 shadow-sm{% else %}mt-6{% endif %}"
+  {% if recording_inspector.auto_refresh_body %}
+  hx-get="{{ recording_inspector.body_url }}"
+  hx-trigger="load, every 2s"
+  hx-swap="innerHTML"
+  {% endif %}
+>
   {% if recording_inspector.embedded %}
   {% include "partials/recording_inspector_embedded_body.html" %}
   {% else %}
