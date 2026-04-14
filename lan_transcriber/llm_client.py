@@ -7,8 +7,8 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-import weakref
+import threading
+from typing import Any, Coroutine, Dict, List, Optional, TypeVar
 
 import anyio
 import httpx
@@ -23,6 +23,7 @@ _DEFAULT_LLM_MAX_TOKENS = 1024
 _MAX_LLM_MAX_TOKENS = 4096
 _HTTP_ERROR_BODY_MAX_CHARS = 2000
 _logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 def _timeout_seconds(value: str | None, *, default: float) -> float:
@@ -219,9 +220,10 @@ class LLMTruncatedResponseError(ValueError):
 class LLMClient:
     """Simple asynchronous client for the language model API."""
 
-    _http_clients: weakref.WeakKeyDictionary[
-        asyncio.AbstractEventLoop, dict[tuple[Any, float], httpx.AsyncClient]
-    ] = weakref.WeakKeyDictionary()
+    _http_clients: dict[tuple[Any, float], httpx.AsyncClient] = {}
+    _http_loop: asyncio.AbstractEventLoop | None = None
+    _http_thread: threading.Thread | None = None
+    _http_runtime_lock = threading.Lock()
 
     def __init__(
         self,
@@ -257,37 +259,114 @@ class LLMClient:
         configured_mock_path = mock_response_path or os.getenv("LLM_MOCK_RESPONSE_PATH")
         self.mock_response_path = Path(configured_mock_path) if configured_mock_path else None
 
-    async def _get_client(self) -> httpx.AsyncClient:
+    @classmethod
+    def _ensure_http_runtime(cls) -> asyncio.AbstractEventLoop:
+        with cls._http_runtime_lock:
+            loop = cls._http_loop
+            thread = cls._http_thread
+            if loop is not None and thread is not None and thread.is_alive() and not loop.is_closed():
+                return loop
+
+            ready = threading.Event()
+            runtime: dict[str, asyncio.AbstractEventLoop] = {}
+
+            def _run_http_loop() -> None:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                runtime["loop"] = loop
+                ready.set()
+                loop.run_forever()
+                loop.close()
+
+            thread = threading.Thread(
+                target=_run_http_loop,
+                name="llm-client-http-loop",
+                daemon=True,
+            )
+            cls._http_loop = None
+            cls._http_thread = thread
+            thread.start()
+            ready.wait()
+            loop = runtime["loop"]
+            cls._http_loop = loop
+            return loop
+
+    @staticmethod
+    def _running_loop() -> asyncio.AbstractEventLoop | None:
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+
+    @classmethod
+    async def _run_on_http_runtime(cls, coroutine: Coroutine[Any, Any, _T]) -> _T:
+        loop = cls._ensure_http_runtime()
+        current_loop = cls._running_loop()
+        if current_loop is loop:
+            return await coroutine
+        future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+        return await asyncio.wrap_future(future)
+
+    async def _get_or_create_client(self) -> httpx.AsyncClient:
         cls = type(self)
         current_factory = httpx.AsyncClient
-        loop = asyncio.get_running_loop()
-        loop_clients = cls._http_clients.setdefault(loop, {})
         client_key = (current_factory, self.timeout)
-        client = loop_clients.get(client_key)
+        client = cls._http_clients.get(client_key)
         if client is None or bool(getattr(client, "is_closed", False)):
             client = current_factory(
                 timeout=httpx.Timeout(self.timeout),
                 limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
             )
-            loop_clients[client_key] = client
+            cls._http_clients[client_key] = client
         return client
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        return await type(self)._run_on_http_runtime(self._get_or_create_client())
+
+    @classmethod
+    async def _close_clients(cls, clients: list[Any]) -> None:
+        del cls
+        closed_ids: set[int] = set()
+        for client in clients:
+            client_id = id(client)
+            if client_id in closed_ids:
+                continue
+            closed_ids.add(client_id)
+            if client is None or bool(getattr(client, "is_closed", False)):
+                continue
+            aclose = getattr(client, "aclose", None)
+            if callable(aclose):
+                await aclose()
 
     @classmethod
     async def close(cls) -> None:
-        loop_clients = list(cls._http_clients.values())
-        cls._http_clients = weakref.WeakKeyDictionary()
-        closed_ids: set[int] = set()
-        for pool in loop_clients:
-            for client in pool.values():
-                client_id = id(client)
-                if client_id in closed_ids:
-                    continue
-                closed_ids.add(client_id)
-                if client is None or bool(getattr(client, "is_closed", False)):
-                    continue
-                aclose = getattr(client, "aclose", None)
-                if callable(aclose):
-                    await aclose()
+        with cls._http_runtime_lock:
+            loop = cls._http_loop
+            thread = cls._http_thread
+
+        if loop is None or thread is None or not thread.is_alive() or loop.is_closed():
+            clients = list(cls._http_clients.values())
+            cls._http_clients = {}
+            await cls._close_clients(clients)
+            with cls._http_runtime_lock:
+                cls._http_loop = None
+                cls._http_thread = None
+            return
+
+        async def _shutdown_http_runtime() -> None:
+            clients = list(cls._http_clients.values())
+            cls._http_clients = {}
+            await cls._close_clients(clients)
+
+        await cls._run_on_http_runtime(_shutdown_http_runtime())
+        loop.call_soon_threadsafe(loop.stop)
+        if thread is not threading.current_thread():
+            await asyncio.to_thread(thread.join)
+        with cls._http_runtime_lock:
+            if cls._http_loop is loop:
+                cls._http_loop = None
+            if cls._http_thread is thread:
+                cls._http_thread = None
 
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=8),
@@ -312,9 +391,12 @@ class LLMClient:
             attempt_number if attempt_number is not None else "unknown",
             payload.get("response_format") is not None,
         )
-        client = await self._get_client()
-        with anyio.fail_after(self.timeout):
-            resp = await client.post(url, json=payload, headers=headers)
+        async def _send_request() -> httpx.Response:
+            client = await self._get_or_create_client()
+            with anyio.fail_after(self.timeout):
+                return await client.post(url, json=payload, headers=headers)
+
+        resp = await type(self)._run_on_http_runtime(_send_request())
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:

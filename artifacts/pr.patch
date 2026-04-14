@@ -1,245 +1,496 @@
 diff --git a/lan_transcriber/llm_client.py b/lan_transcriber/llm_client.py
-index 5129b2b..abf954d 100644
+index abf954d..854c1c0 100644
 --- a/lan_transcriber/llm_client.py
 +++ b/lan_transcriber/llm_client.py
-@@ -2,11 +2,13 @@
- 
- from __future__ import annotations
- 
-+import asyncio
- import json
+@@ -7,8 +7,8 @@ import json
  import logging
  import os
  from pathlib import Path
- from typing import Any, Dict, List, Optional
-+import weakref
+-from typing import Any, Dict, List, Optional
+-import weakref
++import threading
++from typing import Any, Coroutine, Dict, List, Optional, TypeVar
  
  import anyio
  import httpx
-@@ -217,9 +219,9 @@ class LLMTruncatedResponseError(ValueError):
+@@ -23,6 +23,7 @@ _DEFAULT_LLM_MAX_TOKENS = 1024
+ _MAX_LLM_MAX_TOKENS = 4096
+ _HTTP_ERROR_BODY_MAX_CHARS = 2000
+ _logger = logging.getLogger(__name__)
++_T = TypeVar("_T")
+ 
+ 
+ def _timeout_seconds(value: str | None, *, default: float) -> float:
+@@ -219,9 +220,10 @@ class LLMTruncatedResponseError(ValueError):
  class LLMClient:
      """Simple asynchronous client for the language model API."""
  
--    _http_client: httpx.AsyncClient | None = None
--    _http_client_factory: Any = None
--    _http_client_timeout: float | None = None
-+    _http_clients: weakref.WeakKeyDictionary[
-+        asyncio.AbstractEventLoop, dict[tuple[Any, float], httpx.AsyncClient]
-+    ] = weakref.WeakKeyDictionary()
+-    _http_clients: weakref.WeakKeyDictionary[
+-        asyncio.AbstractEventLoop, dict[tuple[Any, float], httpx.AsyncClient]
+-    ] = weakref.WeakKeyDictionary()
++    _http_clients: dict[tuple[Any, float], httpx.AsyncClient] = {}
++    _http_loop: asyncio.AbstractEventLoop | None = None
++    _http_thread: threading.Thread | None = None
++    _http_runtime_lock = threading.Lock()
  
      def __init__(
          self,
-@@ -258,38 +260,34 @@ class LLMClient:
-     async def _get_client(self) -> httpx.AsyncClient:
+@@ -257,37 +259,114 @@ class LLMClient:
+         configured_mock_path = mock_response_path or os.getenv("LLM_MOCK_RESPONSE_PATH")
+         self.mock_response_path = Path(configured_mock_path) if configured_mock_path else None
+ 
+-    async def _get_client(self) -> httpx.AsyncClient:
++    @classmethod
++    def _ensure_http_runtime(cls) -> asyncio.AbstractEventLoop:
++        with cls._http_runtime_lock:
++            loop = cls._http_loop
++            thread = cls._http_thread
++            if loop is not None and thread is not None and thread.is_alive() and not loop.is_closed():
++                return loop
++
++            ready = threading.Event()
++            runtime: dict[str, asyncio.AbstractEventLoop] = {}
++
++            def _run_http_loop() -> None:
++                loop = asyncio.new_event_loop()
++                asyncio.set_event_loop(loop)
++                runtime["loop"] = loop
++                ready.set()
++                loop.run_forever()
++                loop.close()
++
++            thread = threading.Thread(
++                target=_run_http_loop,
++                name="llm-client-http-loop",
++                daemon=True,
++            )
++            cls._http_loop = None
++            cls._http_thread = thread
++            thread.start()
++            ready.wait()
++            loop = runtime["loop"]
++            cls._http_loop = loop
++            return loop
++
++    @staticmethod
++    def _running_loop() -> asyncio.AbstractEventLoop | None:
++        try:
++            return asyncio.get_running_loop()
++        except RuntimeError:
++            return None
++
++    @classmethod
++    async def _run_on_http_runtime(cls, coroutine: Coroutine[Any, Any, _T]) -> _T:
++        loop = cls._ensure_http_runtime()
++        current_loop = cls._running_loop()
++        if current_loop is loop:
++            return await coroutine
++        future = asyncio.run_coroutine_threadsafe(coroutine, loop)
++        return await asyncio.wrap_future(future)
++
++    async def _get_or_create_client(self) -> httpx.AsyncClient:
          cls = type(self)
          current_factory = httpx.AsyncClient
--        client = cls._http_client
--        client_closed = bool(getattr(client, "is_closed", False)) if client is not None else True
--        timeout_changed = cls._http_client_timeout != self.timeout
--        if (
--            client is None
--            or client_closed
--            or cls._http_client_factory is not current_factory
--            or timeout_changed
--        ):
--            if client is not None and not client_closed:
--                aclose = getattr(client, "aclose", None)
--                if callable(aclose):
--                    await aclose()
--            cls._http_client = current_factory(
-+        loop = asyncio.get_running_loop()
-+        loop_clients = cls._http_clients.setdefault(loop, {})
-+        client_key = (current_factory, self.timeout)
-+        client = loop_clients.get(client_key)
-+        if client is None or bool(getattr(client, "is_closed", False)):
-+            client = current_factory(
+-        loop = asyncio.get_running_loop()
+-        loop_clients = cls._http_clients.setdefault(loop, {})
+         client_key = (current_factory, self.timeout)
+-        client = loop_clients.get(client_key)
++        client = cls._http_clients.get(client_key)
+         if client is None or bool(getattr(client, "is_closed", False)):
+             client = current_factory(
                  timeout=httpx.Timeout(self.timeout),
                  limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
              )
--            cls._http_client_factory = current_factory
--            cls._http_client_timeout = self.timeout
--        return cls._http_client
-+            loop_clients[client_key] = client
-+        return client
+-            loop_clients[client_key] = client
++            cls._http_clients[client_key] = client
+         return client
  
++    async def _get_client(self) -> httpx.AsyncClient:
++        return await type(self)._run_on_http_runtime(self._get_or_create_client())
++
      @classmethod
-     async def close(cls) -> None:
--        client = cls._http_client
--        cls._http_client = None
--        cls._http_client_factory = None
--        cls._http_client_timeout = None
--        if client is None or bool(getattr(client, "is_closed", False)):
--            return
--        aclose = getattr(client, "aclose", None)
--        if callable(aclose):
--            await aclose()
-+        loop_clients = list(cls._http_clients.values())
-+        cls._http_clients = weakref.WeakKeyDictionary()
-+        closed_ids: set[int] = set()
-+        for pool in loop_clients:
-+            for client in pool.values():
-+                client_id = id(client)
-+                if client_id in closed_ids:
-+                    continue
-+                closed_ids.add(client_id)
-+                if client is None or bool(getattr(client, "is_closed", False)):
-+                    continue
-+                aclose = getattr(client, "aclose", None)
-+                if callable(aclose):
-+                    await aclose()
+-    async def close(cls) -> None:
+-        loop_clients = list(cls._http_clients.values())
+-        cls._http_clients = weakref.WeakKeyDictionary()
++    async def _close_clients(cls, clients: list[Any]) -> None:
++        del cls
+         closed_ids: set[int] = set()
+-        for pool in loop_clients:
+-            for client in pool.values():
+-                client_id = id(client)
+-                if client_id in closed_ids:
+-                    continue
+-                closed_ids.add(client_id)
+-                if client is None or bool(getattr(client, "is_closed", False)):
+-                    continue
+-                aclose = getattr(client, "aclose", None)
+-                if callable(aclose):
+-                    await aclose()
++        for client in clients:
++            client_id = id(client)
++            if client_id in closed_ids:
++                continue
++            closed_ids.add(client_id)
++            if client is None or bool(getattr(client, "is_closed", False)):
++                continue
++            aclose = getattr(client, "aclose", None)
++            if callable(aclose):
++                await aclose()
++
++    @classmethod
++    async def close(cls) -> None:
++        with cls._http_runtime_lock:
++            loop = cls._http_loop
++            thread = cls._http_thread
++
++        if loop is None or thread is None or not thread.is_alive() or loop.is_closed():
++            clients = list(cls._http_clients.values())
++            cls._http_clients = {}
++            await cls._close_clients(clients)
++            with cls._http_runtime_lock:
++                cls._http_loop = None
++                cls._http_thread = None
++            return
++
++        async def _shutdown_http_runtime() -> None:
++            clients = list(cls._http_clients.values())
++            cls._http_clients = {}
++            await cls._close_clients(clients)
++
++        await cls._run_on_http_runtime(_shutdown_http_runtime())
++        loop.call_soon_threadsafe(loop.stop)
++        if thread is not threading.current_thread():
++            await asyncio.to_thread(thread.join)
++        with cls._http_runtime_lock:
++            if cls._http_loop is loop:
++                cls._http_loop = None
++            if cls._http_thread is thread:
++                cls._http_thread = None
  
      @retry(
          wait=wait_exponential(multiplier=1, min=1, max=8),
+@@ -312,9 +391,12 @@ class LLMClient:
+             attempt_number if attempt_number is not None else "unknown",
+             payload.get("response_format") is not None,
+         )
+-        client = await self._get_client()
+-        with anyio.fail_after(self.timeout):
+-            resp = await client.post(url, json=payload, headers=headers)
++        async def _send_request() -> httpx.Response:
++            client = await self._get_or_create_client()
++            with anyio.fail_after(self.timeout):
++                return await client.post(url, json=payload, headers=headers)
++
++        resp = await type(self)._run_on_http_runtime(_send_request())
+         try:
+             resp.raise_for_status()
+         except httpx.HTTPStatusError as exc:
 diff --git a/tests/test_llm_client.py b/tests/test_llm_client.py
-index 103fb27..6359dad 100644
+index 6359dad..a44e128 100644
 --- a/tests/test_llm_client.py
 +++ b/tests/test_llm_client.py
-@@ -4,6 +4,7 @@ import logging
+@@ -4,7 +4,6 @@ import logging
  import pathlib
  import sys
  from typing import Any
-+import weakref
+-import weakref
  
  import httpx
  import pytest
-@@ -175,22 +176,54 @@ async def test_close_tolerates_client_without_async_close() -> None:
-     class _ClientWithoutClose:
-         is_closed = False
- 
--    llm_client.LLMClient._http_client = _ClientWithoutClose()  # noqa: SLF001
--    llm_client.LLMClient._http_client_factory = object()  # noqa: SLF001
--    llm_client.LLMClient._http_client_timeout = 5.0  # noqa: SLF001
-+    loop = asyncio.get_running_loop()
-+    llm_client.LLMClient._http_clients = weakref.WeakKeyDictionary(  # noqa: SLF001
-+        {loop: {("factory", 5.0): _ClientWithoutClose()}}
-+    )
-+
-+    await llm_client.LLMClient.close()
-+
-+    assert len(llm_client.LLMClient._http_clients) == 0  # noqa: SLF001
-+
-+
-+@pytest.mark.asyncio
-+async def test_close_skips_duplicate_and_already_closed_clients() -> None:
-+    loop = asyncio.get_running_loop()
-+    close_calls: list[str] = []
-+
-+    class _TrackedClient:
-+        def __init__(self, name: str, *, is_closed: bool) -> None:
-+            self.name = name
-+            self.is_closed = is_closed
-+
-+        async def aclose(self) -> None:
-+            close_calls.append(self.name)
-+            self.is_closed = True
-+
-+    shared = _TrackedClient("shared", is_closed=False)
-+    closed = _TrackedClient("closed", is_closed=True)
-+    llm_client.LLMClient._http_clients = weakref.WeakKeyDictionary(  # noqa: SLF001
-+        {
-+            loop: {
-+                ("factory-a", 1.0): shared,
-+                ("factory-b", 1.0): shared,
-+                ("factory-c", 2.0): closed,
-+            }
-+        }
-+    )
- 
-     await llm_client.LLMClient.close()
- 
--    assert llm_client.LLMClient._http_client is None  # noqa: SLF001
--    assert llm_client.LLMClient._http_client_factory is None  # noqa: SLF001
--    assert llm_client.LLMClient._http_client_timeout is None  # noqa: SLF001
-+    assert close_calls == ["shared"]
-+    assert len(llm_client.LLMClient._http_clients) == 0  # noqa: SLF001
+@@ -98,8 +97,7 @@ async def test_generate_payload_includes_max_tokens() -> None:
+     assert payload["max_tokens"] == 1536
  
  
- @pytest.mark.asyncio
--async def test_post_chat_completion_recreates_shared_client_when_timeout_changes(
-+async def test_post_chat_completion_uses_separate_clients_per_event_loop(
+-@pytest.mark.asyncio
+-async def test_post_chat_completion_reuses_shared_http_client(
++def test_post_chat_completion_reuses_shared_http_client_across_asyncio_run(
      monkeypatch: pytest.MonkeyPatch,
  ) -> None:
      created_clients: list["_FakeClient"] = []
-+    active_loop = None
+@@ -133,20 +131,19 @@ async def test_post_chat_completion_reuses_shared_http_client(
+         async def aclose(self) -> None:
+             self.is_closed = True
+ 
+-    await llm_client.LLMClient.close()
+     monkeypatch.setattr(llm_client.httpx, "AsyncClient", _FakeClient)
+     client = llm_client.LLMClient(base_url="http://example.test", timeout=0.1)
+ 
+-    first = await client._post_chat_completion(
+-        url="http://example.test/v1/chat/completions",
+-        payload={"messages": [], "max_tokens": 111},
+-        headers={"Authorization": "Bearer secret"},
+-    )
+-    second = await client._post_chat_completion(
+-        url="http://example.test/v1/chat/completions",
+-        payload={"messages": [], "max_tokens": 222},
+-        headers={},
+-    )
++    async def _post(max_tokens: int, headers: dict[str, str]) -> dict[str, Any]:
++        return await client._post_chat_completion(
++            url="http://example.test/v1/chat/completions",
++            payload={"messages": [], "max_tokens": max_tokens},
++            headers=headers,
++        )
++
++    asyncio.run(llm_client.LLMClient.close())
++    first = asyncio.run(_post(111, {"Authorization": "Bearer secret"}))
++    second = asyncio.run(_post(222, {}))
+ 
+     assert first["choices"][0]["message"]["content"] == "ok"
+     assert second["choices"][0]["message"]["content"] == "ok"
+@@ -159,16 +156,16 @@ async def test_post_chat_completion_reuses_shared_http_client(
+     assert timeout.write == pytest.approx(0.1)
+     assert timeout.pool == pytest.approx(0.1)
+ 
+-    await llm_client.LLMClient.close()
++    asyncio.run(llm_client.LLMClient.close())
+     assert created_clients[0].is_closed is True
+-    replacement = await client._get_client()
++    replacement = asyncio.run(client._get_client())
+     assert len(created_clients) == 2
+     assert replacement is created_clients[1]
+     assert created_clients[1].kwargs["limits"] == httpx.Limits(
+         max_connections=5,
+         max_keepalive_connections=2,
+     )
+-    await llm_client.LLMClient.close()
++    asyncio.run(llm_client.LLMClient.close())
+ 
+ 
+ @pytest.mark.asyncio
+@@ -176,10 +173,7 @@ async def test_close_tolerates_client_without_async_close() -> None:
+     class _ClientWithoutClose:
+         is_closed = False
+ 
+-    loop = asyncio.get_running_loop()
+-    llm_client.LLMClient._http_clients = weakref.WeakKeyDictionary(  # noqa: SLF001
+-        {loop: {("factory", 5.0): _ClientWithoutClose()}}
+-    )
++    llm_client.LLMClient._http_clients = {("factory", 5.0): _ClientWithoutClose()}  # noqa: SLF001
+ 
+     await llm_client.LLMClient.close()
+ 
+@@ -188,7 +182,6 @@ async def test_close_tolerates_client_without_async_close() -> None:
+ 
+ @pytest.mark.asyncio
+ async def test_close_skips_duplicate_and_already_closed_clients() -> None:
+-    loop = asyncio.get_running_loop()
+     close_calls: list[str] = []
+ 
+     class _TrackedClient:
+@@ -202,15 +195,11 @@ async def test_close_skips_duplicate_and_already_closed_clients() -> None:
+ 
+     shared = _TrackedClient("shared", is_closed=False)
+     closed = _TrackedClient("closed", is_closed=True)
+-    llm_client.LLMClient._http_clients = weakref.WeakKeyDictionary(  # noqa: SLF001
+-        {
+-            loop: {
+-                ("factory-a", 1.0): shared,
+-                ("factory-b", 1.0): shared,
+-                ("factory-c", 2.0): closed,
+-            }
+-        }
+-    )
++    llm_client.LLMClient._http_clients = {  # noqa: SLF001
++        ("factory-a", 1.0): shared,
++        ("factory-b", 1.0): shared,
++        ("factory-c", 2.0): closed,
++    }
+ 
+     await llm_client.LLMClient.close()
+ 
+@@ -218,12 +207,10 @@ async def test_close_skips_duplicate_and_already_closed_clients() -> None:
+     assert len(llm_client.LLMClient._http_clients) == 0  # noqa: SLF001
+ 
+ 
+-@pytest.mark.asyncio
+-async def test_post_chat_completion_uses_separate_clients_per_event_loop(
++def test_post_chat_completion_reuses_shared_http_client_across_event_loops(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+     created_clients: list["_FakeClient"] = []
+-    active_loop = None
  
      class _FakeResponse:
          status_code = 200
-@@ -215,6 +248,65 @@ async def test_post_chat_completion_recreates_shared_client_when_timeout_changes
+@@ -246,34 +233,59 @@ async def test_post_chat_completion_uses_separate_clients_per_event_loop(
+         async def aclose(self) -> None:
+             self.is_closed = True
  
-     await llm_client.LLMClient.close()
+-    await llm_client.LLMClient.close()
      monkeypatch.setattr(llm_client.httpx, "AsyncClient", _FakeClient)
-+    loop_one = type("LoopToken", (), {})()
-+    loop_two = type("LoopToken", (), {})()
-+
-+    def _get_running_loop():
-+        return active_loop
-+
-+    monkeypatch.setattr(llm_client.asyncio, "get_running_loop", _get_running_loop)
+-    loop_one = type("LoopToken", (), {})()
+-    loop_two = type("LoopToken", (), {})()
 +    client = llm_client.LLMClient(base_url="http://example.test", timeout=0.1)
-+
-+    active_loop = loop_one
-+    await client._post_chat_completion(
-+        url="http://example.test/v1/chat/completions",
-+        payload={"messages": [], "max_tokens": 111},
-+        headers={},
-+    )
-+    active_loop = loop_two
-+    await client._post_chat_completion(
-+        url="http://example.test/v1/chat/completions",
-+        payload={"messages": [], "max_tokens": 222},
-+        headers={},
-+    )
-+
-+    assert len(created_clients) == 2
+ 
+-    def _get_running_loop():
+-        return active_loop
++    async def _post(max_tokens: int) -> None:
++        await client._post_chat_completion(
++            url="http://example.test/v1/chat/completions",
++            payload={"messages": [], "max_tokens": max_tokens},
++            headers={},
++        )
+ 
+-    monkeypatch.setattr(llm_client.asyncio, "get_running_loop", _get_running_loop)
+-    client = llm_client.LLMClient(base_url="http://example.test", timeout=0.1)
++    asyncio.run(llm_client.LLMClient.close())
++    asyncio.run(_post(111))
++    asyncio.run(_post(222))
+ 
+-    active_loop = loop_one
+-    await client._post_chat_completion(
+-        url="http://example.test/v1/chat/completions",
+-        payload={"messages": [], "max_tokens": 111},
+-        headers={},
++    assert len(created_clients) == 1
 +    assert created_clients[0].is_closed is False
-+    assert created_clients[1].is_closed is False
-+    await llm_client.LLMClient.close()
++    asyncio.run(llm_client.LLMClient.close())
++
++
++def test_running_loop_returns_none_without_active_loop(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    def _raise_runtime_error() -> None:
++        raise RuntimeError("no running event loop")
++
++    monkeypatch.setattr(llm_client.asyncio, "get_running_loop", _raise_runtime_error)
++
++    assert llm_client.LLMClient._running_loop() is None  # noqa: SLF001
 +
 +
 +@pytest.mark.asyncio
-+async def test_post_chat_completion_uses_separate_clients_per_timeout_without_closing_active_one(
++async def test_run_on_http_runtime_awaits_inline_when_already_on_http_loop(
 +    monkeypatch: pytest.MonkeyPatch,
 +) -> None:
-+    created_clients: list["_FakeClient"] = []
-+    loop_token = type("LoopToken", (), {})()
++    loop = asyncio.get_running_loop()
 +
-+    class _FakeResponse:
-+        status_code = 200
++    async def _inline() -> str:
++        return "inline"
 +
-+        def raise_for_status(self) -> None:
-+            return None
++    monkeypatch.setattr(
++        llm_client.LLMClient,
++        "_ensure_http_runtime",
++        classmethod(lambda cls: loop),
+     )
+-    active_loop = loop_two
+-    await client._post_chat_completion(
+-        url="http://example.test/v1/chat/completions",
+-        payload={"messages": [], "max_tokens": 222},
+-        headers={},
++    monkeypatch.setattr(
++        llm_client.LLMClient,
++        "_running_loop",
++        staticmethod(lambda: loop),
+     )
+ 
+-    assert len(created_clients) == 2
+-    assert created_clients[0].is_closed is False
+-    assert created_clients[1].is_closed is False
+-    await llm_client.LLMClient.close()
++    result = await llm_client.LLMClient._run_on_http_runtime(_inline())  # noqa: SLF001
 +
-+        def json(self) -> dict[str, object]:
-+            return {"choices": [{"message": {"content": "ok"}}]}
++    assert result == "inline"
+ 
+ 
+ @pytest.mark.asyncio
+@@ -281,7 +293,6 @@ async def test_post_chat_completion_uses_separate_clients_per_timeout_without_cl
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+     created_clients: list["_FakeClient"] = []
+-    loop_token = type("LoopToken", (), {})()
+ 
+     class _FakeResponse:
+         status_code = 200
+@@ -306,7 +317,6 @@ async def test_post_chat_completion_uses_separate_clients_per_timeout_without_cl
+ 
+     await llm_client.LLMClient.close()
+     monkeypatch.setattr(llm_client.httpx, "AsyncClient", _FakeClient)
+-    monkeypatch.setattr(llm_client.asyncio, "get_running_loop", lambda: loop_token)
+     fast_client = llm_client.LLMClient(base_url="http://example.test", timeout=0.1)
+     slow_client = llm_client.LLMClient(base_url="http://example.test", timeout=321.0)
+ 
+@@ -329,6 +339,83 @@ async def test_post_chat_completion_uses_separate_clients_per_timeout_without_cl
+     assert created_clients[1].is_closed is True
+ 
+ 
++@pytest.mark.asyncio
++async def test_close_skips_join_and_cleanup_reset_when_runtime_state_changes(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    stop_calls: list[str] = []
 +
-+    class _FakeClient:
-+        def __init__(self, **kwargs: Any) -> None:
-+            self.kwargs = kwargs
++    class _Loop:
++        def __init__(self, name: str) -> None:
++            self.name = name
++            self.stopped = False
++
++        def is_closed(self) -> bool:
++            return False
++
++        def stop(self) -> None:
++            self.stopped = True
++
++        def call_soon_threadsafe(self, callback: Any) -> None:
++            stop_calls.append(self.name)
++            callback()
++
++    class _Thread:
++        def __init__(self, name: str) -> None:
++            self.name = name
++
++        def is_alive(self) -> bool:
++            return True
++
++    class _TrackedClient:
++        def __init__(self) -> None:
 +            self.is_closed = False
-+            created_clients.append(self)
-+
-+        async def post(self, *_args: Any, **_kwargs: Any) -> _FakeResponse:
-+            return _FakeResponse()
 +
 +        async def aclose(self) -> None:
 +            self.is_closed = True
 +
-+    await llm_client.LLMClient.close()
-+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", _FakeClient)
-+    monkeypatch.setattr(llm_client.asyncio, "get_running_loop", lambda: loop_token)
-     fast_client = llm_client.LLMClient(base_url="http://example.test", timeout=0.1)
-     slow_client = llm_client.LLMClient(base_url="http://example.test", timeout=321.0)
- 
-@@ -230,9 +322,11 @@ async def test_post_chat_completion_recreates_shared_client_when_timeout_changes
-     )
- 
-     assert len(created_clients) == 2
--    assert created_clients[0].is_closed is True
-+    assert created_clients[0].is_closed is False
-     assert created_clients[1].kwargs["timeout"].read == pytest.approx(321.0)
-     await llm_client.LLMClient.close()
-+    assert created_clients[0].is_closed is True
-+    assert created_clients[1].is_closed is True
- 
- 
++    loop = _Loop("active")
++    replacement_loop = _Loop("replacement")
++    thread = _Thread("active")
++    replacement_thread = _Thread("replacement")
++    client = _TrackedClient()
++    original_clients = llm_client.LLMClient._http_clients  # noqa: SLF001
++    original_loop = llm_client.LLMClient._http_loop  # noqa: SLF001
++    original_thread = llm_client.LLMClient._http_thread  # noqa: SLF001
++
++    try:
++        llm_client.LLMClient._http_clients = {("factory", 1.0): client}  # noqa: SLF001
++        llm_client.LLMClient._http_loop = loop  # noqa: SLF001
++        llm_client.LLMClient._http_thread = thread  # noqa: SLF001
++
++        async def _fake_run_on_http_runtime(
++            cls: type[llm_client.LLMClient],
++            coroutine: Any,
++        ) -> None:
++            await coroutine
++            cls._http_loop = replacement_loop  # noqa: SLF001
++            cls._http_thread = replacement_thread  # noqa: SLF001
++
++        monkeypatch.setattr(
++            llm_client.LLMClient,
++            "_run_on_http_runtime",
++            classmethod(_fake_run_on_http_runtime),
++        )
++        monkeypatch.setattr(llm_client.threading, "current_thread", lambda: thread)
++
++        await llm_client.LLMClient.close()
++
++        assert client.is_closed is True
++        assert stop_calls == ["active"]
++        assert loop.stopped is True
++        assert llm_client.LLMClient._http_loop is replacement_loop  # noqa: SLF001
++        assert llm_client.LLMClient._http_thread is replacement_thread  # noqa: SLF001
++    finally:
++        llm_client.LLMClient._http_clients = original_clients  # noqa: SLF001
++        llm_client.LLMClient._http_loop = original_loop  # noqa: SLF001
++        llm_client.LLMClient._http_thread = original_thread  # noqa: SLF001
++
++
  @pytest.mark.asyncio
+ @respx.mock
+ async def test_generate_omits_model_when_not_configured() -> None:
