@@ -2,7 +2,7 @@
   id="recording-inspector-body"
   {% if recording_inspector.auto_refresh_body %}
   hx-get="{{ recording_inspector.body_url }}"
-  hx-trigger="load, every 2s"
+  hx-trigger="every 2s"
   hx-swap="outerHTML"
   {% endif %}
 >

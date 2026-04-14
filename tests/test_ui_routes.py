@@ -4890,7 +4890,8 @@ def test_recording_detail_body_stops_polling_after_resummarize_finishes(
     active_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
     assert active_body.status_code == 200
     assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' in active_body.text
-    assert 'hx-trigger="load, every 2s"' in active_body.text
+    assert 'hx-trigger="every 2s"' in active_body.text
+    assert 'hx-trigger="load, every 2s"' not in active_body.text
 
     monkeypatch.setattr(
         ui_routes,
@@ -4900,7 +4901,7 @@ def test_recording_detail_body_stops_polling_after_resummarize_finishes(
 
     settled_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
     assert settled_body.status_code == 200
-    assert 'hx-trigger="load, every 2s"' not in settled_body.text
+    assert 'hx-trigger="every 2s"' not in settled_body.text
     assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' not in settled_body.text
 
 

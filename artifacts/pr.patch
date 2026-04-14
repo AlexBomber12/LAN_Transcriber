@@ -1,43 +1,36 @@
-diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 330f3fc..58607a2 100644
---- a/tests/test_cov_lan_app_ui_routes.py
-+++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -4723,12 +4723,17 @@ def test_language_action_error_paths(
-     monkeypatch.setattr(
-         ui_routes, "_save_language_settings", lambda *_a, **_k: ("en", None)
-     )
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "enqueue_recording_resummarize_job",
-+        lambda *_a, **_k: None,
-+    )
-     ok_settings = c.post(f"/ui/recordings/{recording_id}/language/settings")
-     assert ok_settings.status_code == 303
- 
-     assert c.post("/ui/recordings/missing/language/resummarize").status_code == 404
-     bad_resummarize = c.post(f"/ui/recordings/{recording_id}/language/resummarize")
--    assert bad_resummarize.status_code == 503
-+    assert bad_resummarize.status_code == 303
+diff --git a/lan_app/templates/partials/recording_inspector_body.html b/lan_app/templates/partials/recording_inspector_body.html
+index e8ace57..2d6f18b 100644
+--- a/lan_app/templates/partials/recording_inspector_body.html
++++ b/lan_app/templates/partials/recording_inspector_body.html
+@@ -2,7 +2,7 @@
+   id="recording-inspector-body"
+   {% if recording_inspector.auto_refresh_body %}
+   hx-get="{{ recording_inspector.body_url }}"
+-  hx-trigger="load, every 2s"
++  hx-trigger="every 2s"
+   hx-swap="outerHTML"
+   {% endif %}
+ >
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 1ee4711..9bca96d 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -4890,7 +4890,8 @@ def test_recording_detail_body_stops_polling_after_resummarize_finishes(
+     active_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
+     assert active_body.status_code == 200
+     assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' in active_body.text
+-    assert 'hx-trigger="load, every 2s"' in active_body.text
++    assert 'hx-trigger="every 2s"' in active_body.text
++    assert 'hx-trigger="load, every 2s"' not in active_body.text
  
      monkeypatch.setattr(
          ui_routes,
-@@ -4763,6 +4768,19 @@ def test_language_action_error_paths(
-     retr_bad = c.post(f"/ui/recordings/{recording_id}/language/retranscribe")
-     assert retr_bad.status_code == 422
+@@ -4900,7 +4901,7 @@ def test_recording_detail_body_stops_polling_after_resummarize_finishes(
  
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "_save_language_settings",
-+        lambda *_a, **_k: (None, None),
-+    )
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "enqueue_recording_job",
-+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("queue down")),
-+    )
-+    retr_error = c.post(f"/ui/recordings/{recording_id}/language/retranscribe")
-+    assert retr_error.status_code == 503
-+
-     monkeypatch.setattr(
-         ui_routes, "_save_language_settings", lambda *_a, **_k: (None, None)
-     )
+     settled_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
+     assert settled_body.status_code == 200
+-    assert 'hx-trigger="load, every 2s"' not in settled_body.text
++    assert 'hx-trigger="every 2s"' not in settled_body.text
+     assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' not in settled_body.text
+ 
+ 
