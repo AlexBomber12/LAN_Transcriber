@@ -136,7 +136,7 @@ class SummaryResponse(BaseModel):
     @field_validator("tone_score", mode="before")
     @classmethod
     def _clean_tone_score(cls, value: Any) -> int | None:
-        if value is None or value == "":
+        if _tone_score_missing(value):
             return None
         return _normalise_tone_score(value)
 
@@ -160,6 +160,12 @@ def _language_name(code: str) -> str:
 def _normalise_tone_score(value: Any, *, default: int = 0) -> int:
     score = int(round(safe_float(value, default=default)))
     return min(max(score, 0), 100)
+
+
+def _tone_score_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    return isinstance(value, str) and not value.strip()
 
 
 def _chunk_text_for_prompt(text: str, *, max_chars: int = 500) -> list[str]:
@@ -448,7 +454,7 @@ def _fallback_payload(
     topic = topic or default_topic
 
     tone_score_source = extracted.get("tone_score")
-    if tone_score_source in (None, ""):
+    if _tone_score_missing(tone_score_source):
         tone_score_source = extracted.get("friendly")
     tone_score = _normalise_tone_score(tone_score_source, default=friendly)
     emotional_lines = normalise_text_items(extracted.get("emotional_summary"), max_items=3)
@@ -517,7 +523,7 @@ def build_summary_payload(
         candidate["summary_bullets"] = normalise_text_items(candidate.get("summary"), max_items=12)
     if "topic" not in candidate:
         candidate["topic"] = default_topic
-    if candidate.get("tone_score") in (None, "") and candidate.get("friendly") not in (None, ""):
+    if _tone_score_missing(candidate.get("tone_score")) and not _tone_score_missing(candidate.get("friendly")):
         candidate["tone_score"] = candidate.get("friendly")
 
     try:
