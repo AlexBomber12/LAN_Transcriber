@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import weakref
 
 import anyio
 import httpx
@@ -217,9 +219,9 @@ class LLMTruncatedResponseError(ValueError):
 class LLMClient:
     """Simple asynchronous client for the language model API."""
 
-    _http_client: httpx.AsyncClient | None = None
-    _http_client_factory: Any = None
-    _http_client_timeout: float | None = None
+    _http_clients: weakref.WeakKeyDictionary[
+        asyncio.AbstractEventLoop, dict[tuple[Any, float], httpx.AsyncClient]
+    ] = weakref.WeakKeyDictionary()
 
     def __init__(
         self,
@@ -258,38 +260,34 @@ class LLMClient:
     async def _get_client(self) -> httpx.AsyncClient:
         cls = type(self)
         current_factory = httpx.AsyncClient
-        client = cls._http_client
-        client_closed = bool(getattr(client, "is_closed", False)) if client is not None else True
-        timeout_changed = cls._http_client_timeout != self.timeout
-        if (
-            client is None
-            or client_closed
-            or cls._http_client_factory is not current_factory
-            or timeout_changed
-        ):
-            if client is not None and not client_closed:
-                aclose = getattr(client, "aclose", None)
-                if callable(aclose):
-                    await aclose()
-            cls._http_client = current_factory(
+        loop = asyncio.get_running_loop()
+        loop_clients = cls._http_clients.setdefault(loop, {})
+        client_key = (current_factory, self.timeout)
+        client = loop_clients.get(client_key)
+        if client is None or bool(getattr(client, "is_closed", False)):
+            client = current_factory(
                 timeout=httpx.Timeout(self.timeout),
                 limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
             )
-            cls._http_client_factory = current_factory
-            cls._http_client_timeout = self.timeout
-        return cls._http_client
+            loop_clients[client_key] = client
+        return client
 
     @classmethod
     async def close(cls) -> None:
-        client = cls._http_client
-        cls._http_client = None
-        cls._http_client_factory = None
-        cls._http_client_timeout = None
-        if client is None or bool(getattr(client, "is_closed", False)):
-            return
-        aclose = getattr(client, "aclose", None)
-        if callable(aclose):
-            await aclose()
+        loop_clients = list(cls._http_clients.values())
+        cls._http_clients = weakref.WeakKeyDictionary()
+        closed_ids: set[int] = set()
+        for pool in loop_clients:
+            for client in pool.values():
+                client_id = id(client)
+                if client_id in closed_ids:
+                    continue
+                closed_ids.add(client_id)
+                if client is None or bool(getattr(client, "is_closed", False)):
+                    continue
+                aclose = getattr(client, "aclose", None)
+                if callable(aclose):
+                    await aclose()
 
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=8),
