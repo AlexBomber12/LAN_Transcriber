@@ -10,6 +10,7 @@ from lan_app import api, uploads
 from lan_app.config import AppSettings
 from lan_app.constants import JOB_STATUS_QUEUED, JOB_TYPE_PRECHECK, RECORDING_STATUS_QUEUED
 from lan_app.db import (
+    create_recording,
     create_job,
     get_recording,
     init_db,
@@ -35,6 +36,7 @@ def _stub_enqueue(monkeypatch, cfg: AppSettings) -> None:
         recording_id: str,
         *,
         job_type: str = JOB_TYPE_PRECHECK,
+        force_reprocess: bool = False,
         settings: AppSettings | None = None,
     ) -> RecordingJob:
         effective = settings or cfg
@@ -191,3 +193,384 @@ def test_upload_queue_failure_rolls_back_recording(tmp_path: Path, monkeypatch):
     assert total == 0
     assert items == []
     assert list(cfg.recordings_root.glob("trs_*")) == []
+
+
+def test_find_matching_upload_recording_returns_existing_id(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording("rec-missing-raw", source="upload", source_filename="missing.mp3", settings=cfg)
+    create_recording("rec-match", source="upload", source_filename="match.mp3", settings=cfg)
+    raw_dir = cfg.recordings_root / "rec-match" / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "audio.mp3").write_bytes(b"same-audio")
+    upload_path = tmp_path / "incoming.mp3"
+    upload_path.write_bytes(b"same-audio")
+
+    assert uploads.find_matching_upload_recording(upload_path, settings=cfg) == "rec-match"
+
+
+def test_find_matching_upload_recording_returns_none_for_missing_or_different_upload(
+    tmp_path: Path,
+):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    upload_path = tmp_path / "incoming.mp3"
+    upload_path.write_bytes(b"same-size")
+    assert uploads.find_matching_upload_recording(upload_path, settings=cfg) is None
+
+    create_recording("rec-other", source="upload", source_filename="other.mp3", settings=cfg)
+    raw_dir = cfg.recordings_root / "rec-other" / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "audio.mp3").write_bytes(b"different")
+
+    missing_upload = tmp_path / "missing.mp3"
+    assert uploads.find_matching_upload_recording(missing_upload, settings=cfg) is None
+
+    assert uploads.find_matching_upload_recording(upload_path, settings=cfg) is None
+
+
+def test_find_matching_upload_recording_returns_none_when_upload_stat_fails(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    upload_path = tmp_path / "incoming.mp3"
+    upload_path.write_bytes(b"abc")
+
+    real_stat = Path.stat
+
+    def _broken_stat(self: Path, *args, **kwargs):
+        if self == upload_path:
+            raise OSError("bad upload stat")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _broken_stat)
+
+    assert uploads.find_matching_upload_recording(upload_path, settings=cfg) is None
+
+
+def test_find_matching_upload_recording_returns_none_for_directory_path(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    upload_dir = tmp_path / "incoming-dir"
+    upload_dir.mkdir()
+
+    assert uploads.find_matching_upload_recording(upload_dir, settings=cfg) is None
+
+
+def test_find_matching_upload_recording_skips_unreadable_existing_audio(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording("rec-bad", source="upload", source_filename="bad.mp3", settings=cfg)
+    raw_audio = cfg.recordings_root / "rec-bad" / "raw" / "audio.mp3"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"abc")
+    upload_path = tmp_path / "incoming.mp3"
+    upload_path.write_bytes(b"abc")
+
+    real_sha256 = uploads._sha256_file
+
+    def _broken_sha256(path: Path) -> str:
+        if path == raw_audio:
+            raise OSError("bad raw audio")
+        return real_sha256(path)
+
+    monkeypatch.setattr(uploads, "_sha256_file", _broken_sha256)
+
+    assert uploads.find_matching_upload_recording(upload_path, settings=cfg) is None
+
+
+def test_find_matching_upload_recording_skips_size_mismatch(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording("rec-size", source="upload", source_filename="size.mp3", settings=cfg)
+    raw_audio = cfg.recordings_root / "rec-size" / "raw" / "audio.mp3"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"abcd")
+    upload_path = tmp_path / "incoming.mp3"
+    upload_path.write_bytes(b"abc")
+
+    assert uploads.find_matching_upload_recording(upload_path, settings=cfg) is None
+
+
+def test_reupload_reuses_existing_recording_and_enqueues_force_reprocess(
+    tmp_path: Path,
+    monkeypatch,
+    caplog,
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+    caplog.set_level("INFO")
+
+    observed: list[dict[str, object]] = []
+
+    def _fake_enqueue(
+        recording_id: str,
+        *,
+        job_type: str = JOB_TYPE_PRECHECK,
+        force_reprocess: bool = False,
+        settings: AppSettings | None = None,
+    ) -> RecordingJob:
+        observed.append(
+            {
+                "recording_id": recording_id,
+                "job_type": job_type,
+                "force_reprocess": force_reprocess,
+            }
+        )
+        return RecordingJob(
+            job_id=f"job-{len(observed)}",
+            recording_id=recording_id,
+            job_type=job_type,
+        )
+
+    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
+
+    client = TestClient(api.app)
+    first = client.post(
+        "/api/uploads",
+        files={"file": ("meeting.mp3", b"abc", "audio/mpeg")},
+    )
+    assert first.status_code == 200
+    first_payload = first.json()
+
+    caplog.clear()
+    second = client.post(
+        "/api/uploads",
+        files={"file": ("meeting-copy.mp3", b"abc", "audio/mpeg")},
+    )
+    assert second.status_code == 200
+    second_payload = second.json()
+
+    assert second_payload["recording_id"] == first_payload["recording_id"]
+    assert second_payload["captured_at"] == first_payload["captured_at"]
+    items, total = list_recordings(settings=cfg)
+    assert total == 1
+    assert items[0]["id"] == first_payload["recording_id"]
+    assert observed == [
+        {
+            "recording_id": first_payload["recording_id"],
+            "job_type": JOB_TYPE_PRECHECK,
+            "force_reprocess": False,
+        },
+        {
+            "recording_id": first_payload["recording_id"],
+            "job_type": JOB_TYPE_PRECHECK,
+            "force_reprocess": True,
+        },
+    ]
+    assert f"re-upload detected for {first_payload['recording_id']}" in caplog.text
+    upload_dirs = sorted(cfg.recordings_root.glob("trs_*"))
+    assert len(upload_dirs) == 1
+
+
+def test_upload_ignores_filesystem_match_without_recording_row(
+    tmp_path: Path,
+    monkeypatch,
+    caplog,
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+    caplog.set_level("WARNING")
+
+    observed: list[dict[str, object]] = []
+
+    def _fake_enqueue(
+        recording_id: str,
+        *,
+        job_type: str = JOB_TYPE_PRECHECK,
+        force_reprocess: bool = False,
+        settings: AppSettings | None = None,
+    ) -> RecordingJob:
+        observed.append(
+            {
+                "recording_id": recording_id,
+                "job_type": job_type,
+                "force_reprocess": force_reprocess,
+            }
+        )
+        return RecordingJob(
+            job_id=f"job-{len(observed)}",
+            recording_id=recording_id,
+            job_type=job_type,
+        )
+
+    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
+
+    orphan_raw = cfg.recordings_root / "rec-orphan" / "raw" / "audio.mp3"
+    orphan_raw.parent.mkdir(parents=True, exist_ok=True)
+    orphan_raw.write_bytes(b"abc")
+
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/uploads",
+        files={"file": ("meeting.mp3", b"abc", "audio/mpeg")},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["recording_id"] != "rec-orphan"
+    items, total = list_recordings(settings=cfg)
+    assert total == 1
+    assert items[0]["id"] == payload["recording_id"]
+    assert observed == [
+        {
+            "recording_id": payload["recording_id"],
+            "job_type": JOB_TYPE_PRECHECK,
+            "force_reprocess": False,
+        }
+    ]
+    assert "duplicate upload matched raw audio for rec-orphan" in caplog.text
+
+
+def test_reupload_skips_orphan_match_and_reuses_persisted_recording(
+    tmp_path: Path,
+    monkeypatch,
+    caplog,
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+    caplog.set_level("WARNING")
+
+    observed: list[dict[str, object]] = []
+
+    def _fake_enqueue(
+        recording_id: str,
+        *,
+        job_type: str = JOB_TYPE_PRECHECK,
+        force_reprocess: bool = False,
+        settings: AppSettings | None = None,
+    ) -> RecordingJob:
+        observed.append(
+            {
+                "recording_id": recording_id,
+                "job_type": job_type,
+                "force_reprocess": force_reprocess,
+            }
+        )
+        return RecordingJob(
+            job_id=f"job-{len(observed)}",
+            recording_id=recording_id,
+            job_type=job_type,
+        )
+
+    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
+
+    orphan_raw = cfg.recordings_root / "rec-aaa-orphan" / "raw" / "audio.mp3"
+    orphan_raw.parent.mkdir(parents=True, exist_ok=True)
+    orphan_raw.write_bytes(b"abc")
+
+    create_recording("rec-zzz-valid", source="upload", source_filename="valid.mp3", settings=cfg)
+    valid_raw = cfg.recordings_root / "rec-zzz-valid" / "raw" / "audio.mp3"
+    valid_raw.parent.mkdir(parents=True, exist_ok=True)
+    valid_raw.write_bytes(b"abc")
+
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/uploads",
+        files={"file": ("meeting.mp3", b"abc", "audio/mpeg")},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["recording_id"] == "rec-zzz-valid"
+    items, total = list_recordings(settings=cfg)
+    assert total == 1
+    assert items[0]["id"] == "rec-zzz-valid"
+    assert observed == [
+        {
+            "recording_id": "rec-zzz-valid",
+            "job_type": JOB_TYPE_PRECHECK,
+            "force_reprocess": True,
+        }
+    ]
+    assert "duplicate upload matched raw audio for rec-aaa-orphan" in caplog.text
+
+
+def test_reupload_active_job_conflict_returns_409(tmp_path: Path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+
+    def _fake_enqueue(
+        recording_id: str,
+        *,
+        job_type: str = JOB_TYPE_PRECHECK,
+        force_reprocess: bool = False,
+        settings: AppSettings | None = None,
+    ) -> RecordingJob:
+        if force_reprocess:
+            from lan_app.jobs import DuplicateRecordingJobError
+
+            raise DuplicateRecordingJobError(recording_id=recording_id, job_id="existing-job")
+        return RecordingJob(
+            job_id="job-first",
+            recording_id=recording_id,
+            job_type=job_type,
+        )
+
+    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
+
+    client = TestClient(api.app)
+    first = client.post(
+        "/api/uploads",
+        files={"file": ("meeting.mp3", b"abc", "audio/mpeg")},
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/uploads",
+        files={"file": ("meeting-again.mp3", b"abc", "audio/mpeg")},
+    )
+    assert second.status_code == 409
+    assert second.json()["detail"]["existing_job_id"] == "existing-job"
+    items, total = list_recordings(settings=cfg)
+    assert total == 1
+    assert len(sorted(cfg.recordings_root.glob("trs_*"))) == 1
+
+
+def test_reupload_queue_failure_returns_503(tmp_path: Path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+
+    def _fake_enqueue(
+        recording_id: str,
+        *,
+        job_type: str = JOB_TYPE_PRECHECK,
+        force_reprocess: bool = False,
+        settings: AppSettings | None = None,
+    ) -> RecordingJob:
+        if force_reprocess:
+            raise RuntimeError("redis down")
+        return RecordingJob(
+            job_id="job-first",
+            recording_id=recording_id,
+            job_type=job_type,
+        )
+
+    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
+
+    client = TestClient(api.app)
+    first = client.post(
+        "/api/uploads",
+        files={"file": ("meeting.mp3", b"abc", "audio/mpeg")},
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/uploads",
+        files={"file": ("meeting-again.mp3", b"abc", "audio/mpeg")},
+    )
+    assert second.status_code == 503
+    assert second.json()["detail"] == "Queue unavailable: redis down"
+    items, total = list_recordings(settings=cfg)
+    assert total == 1
+    assert len(sorted(cfg.recordings_root.glob("trs_*"))) == 1

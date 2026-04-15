@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+from collections.abc import Iterator
 from pathlib import Path
 import re
+import stat
 from typing import BinaryIO
 from zoneinfo import ZoneInfo
+
+from .config import AppSettings
 
 ALLOWED_UPLOAD_EXTENSIONS = {
     ".mp3",
@@ -151,9 +156,61 @@ def write_upload_to_path(upload, dest: Path, *, max_bytes: int | None) -> int:
     return bytes_written
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(_COPY_CHUNK_SIZE)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def find_matching_upload_recording(
+    upload_path: Path,
+    *,
+    settings: AppSettings,
+) -> str | None:
+    for recording_id in iter_matching_upload_recordings(
+        upload_path,
+        settings=settings,
+    ):
+        return recording_id
+    return None
+
+
+def iter_matching_upload_recordings(
+    upload_path: Path,
+    *,
+    settings: AppSettings,
+) -> Iterator[str]:
+    try:
+        upload_stat = upload_path.stat()
+    except OSError:
+        return
+    if not stat.S_ISREG(upload_stat.st_mode):
+        return
+    upload_size = upload_stat.st_size
+    upload_digest = _sha256_file(upload_path)
+
+    for raw_audio in sorted(settings.recordings_root.glob("*/raw/audio.*")):
+        if raw_audio == upload_path:
+            continue
+        try:
+            if raw_audio.stat().st_size != upload_size:
+                continue
+            if _sha256_file(raw_audio) == upload_digest:
+                yield raw_audio.parent.parent.name
+        except OSError:
+            continue
+
+
 __all__ = [
     "ALLOWED_UPLOAD_EXTENSIONS",
     "CaptureTimeInference",
+    "find_matching_upload_recording",
+    "iter_matching_upload_recordings",
     "infer_captured_at",
     "infer_upload_capture_time",
     "normalize_plaud_captured_at",

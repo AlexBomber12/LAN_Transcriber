@@ -1,36 +1,180 @@
-diff --git a/lan_app/templates/partials/recording_inspector_body.html b/lan_app/templates/partials/recording_inspector_body.html
-index e8ace57..2d6f18b 100644
---- a/lan_app/templates/partials/recording_inspector_body.html
-+++ b/lan_app/templates/partials/recording_inspector_body.html
-@@ -2,7 +2,7 @@
-   id="recording-inspector-body"
-   {% if recording_inspector.auto_refresh_body %}
-   hx-get="{{ recording_inspector.body_url }}"
--  hx-trigger="load, every 2s"
-+  hx-trigger="every 2s"
-   hx-swap="outerHTML"
-   {% endif %}
- >
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 1ee4711..9bca96d 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -4890,7 +4890,8 @@ def test_recording_detail_body_stops_polling_after_resummarize_finishes(
-     active_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
-     assert active_body.status_code == 200
-     assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' in active_body.text
--    assert 'hx-trigger="load, every 2s"' in active_body.text
-+    assert 'hx-trigger="every 2s"' in active_body.text
-+    assert 'hx-trigger="load, every 2s"' not in active_body.text
+diff --git a/lan_app/api.py b/lan_app/api.py
+index 4842356..c27dcbc 100644
+--- a/lan_app/api.py
++++ b/lan_app/api.py
+@@ -63,8 +63,8 @@ from .ops import RecordingDeleteError, delete_recording_with_artifacts
+ from .reaper import run_stuck_job_reaper_once
+ from .uploads import (
+     ALLOWED_UPLOAD_EXTENSIONS,
+-    find_matching_upload_recording,
+     infer_upload_capture_time,
++    iter_matching_upload_recordings,
+     safe_filename,
+     suffix_from_name,
+     write_upload_to_path,
+@@ -549,20 +549,22 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
+             file.filename or "",
+             upload_capture_timezone=_settings.upload_capture_tzinfo(),
+         )
+-        matched_recording_id = find_matching_upload_recording(
++        matched_recording_id = None
++        existing = None
++        for candidate_recording_id in iter_matching_upload_recordings(
+             dest,
+             settings=_settings,
+-        )
+-        if matched_recording_id is not None:
+-            existing = get_recording(matched_recording_id, settings=_settings)
++        ):
++            existing = get_recording(candidate_recording_id, settings=_settings)
+             if existing is None:
+                 _logger.warning(
+                     "duplicate upload matched raw audio for %s but no recording row exists; treating upload as new",
+-                    matched_recording_id,
++                    candidate_recording_id,
+                 )
+-                matched_recording_id = None
+-            else:
+-                cleanup_uploaded_recording_dir = True
++                continue
++            matched_recording_id = candidate_recording_id
++            cleanup_uploaded_recording_dir = True
++            break
+         if matched_recording_id is not None:
+             _logger.info(
+                 "re-upload detected for %s, clearing derived artifacts for full reprocess",
+diff --git a/lan_app/uploads.py b/lan_app/uploads.py
+index a0d5f5a..a159292 100644
+--- a/lan_app/uploads.py
++++ b/lan_app/uploads.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ from dataclasses import dataclass
+ from datetime import datetime, timezone
+ import hashlib
++from collections.abc import Iterator
+ from pathlib import Path
+ import re
+ import stat
+@@ -171,12 +172,25 @@ def find_matching_upload_recording(
+     *,
+     settings: AppSettings,
+ ) -> str | None:
++    for recording_id in iter_matching_upload_recordings(
++        upload_path,
++        settings=settings,
++    ):
++        return recording_id
++    return None
++
++
++def iter_matching_upload_recordings(
++    upload_path: Path,
++    *,
++    settings: AppSettings,
++) -> Iterator[str]:
+     try:
+         upload_stat = upload_path.stat()
+     except OSError:
+-        return None
++        return
+     if not stat.S_ISREG(upload_stat.st_mode):
+-        return None
++        return
+     upload_size = upload_stat.st_size
+     upload_digest = _sha256_file(upload_path)
  
-     monkeypatch.setattr(
-         ui_routes,
-@@ -4900,7 +4901,7 @@ def test_recording_detail_body_stops_polling_after_resummarize_finishes(
+@@ -187,16 +201,16 @@ def find_matching_upload_recording(
+             if raw_audio.stat().st_size != upload_size:
+                 continue
+             if _sha256_file(raw_audio) == upload_digest:
+-                return raw_audio.parent.parent.name
++                yield raw_audio.parent.parent.name
+         except OSError:
+             continue
+-    return None
  
-     settled_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
-     assert settled_body.status_code == 200
--    assert 'hx-trigger="load, every 2s"' not in settled_body.text
-+    assert 'hx-trigger="every 2s"' not in settled_body.text
-     assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' not in settled_body.text
+ 
+ __all__ = [
+     "ALLOWED_UPLOAD_EXTENSIONS",
+     "CaptureTimeInference",
+     "find_matching_upload_recording",
++    "iter_matching_upload_recordings",
+     "infer_captured_at",
+     "infer_upload_capture_time",
+     "normalize_plaud_captured_at",
+diff --git a/tests/test_upload.py b/tests/test_upload.py
+index 162524e..b5d3d8c 100644
+--- a/tests/test_upload.py
++++ b/tests/test_upload.py
+@@ -429,6 +429,71 @@ def test_upload_ignores_filesystem_match_without_recording_row(
+     assert "duplicate upload matched raw audio for rec-orphan" in caplog.text
  
  
++def test_reupload_skips_orphan_match_and_reuses_persisted_recording(
++    tmp_path: Path,
++    monkeypatch,
++    caplog,
++):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    init_db(cfg)
++    caplog.set_level("WARNING")
++
++    observed: list[dict[str, object]] = []
++
++    def _fake_enqueue(
++        recording_id: str,
++        *,
++        job_type: str = JOB_TYPE_PRECHECK,
++        force_reprocess: bool = False,
++        settings: AppSettings | None = None,
++    ) -> RecordingJob:
++        observed.append(
++            {
++                "recording_id": recording_id,
++                "job_type": job_type,
++                "force_reprocess": force_reprocess,
++            }
++        )
++        return RecordingJob(
++            job_id=f"job-{len(observed)}",
++            recording_id=recording_id,
++            job_type=job_type,
++        )
++
++    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
++
++    orphan_raw = cfg.recordings_root / "rec-aaa-orphan" / "raw" / "audio.mp3"
++    orphan_raw.parent.mkdir(parents=True, exist_ok=True)
++    orphan_raw.write_bytes(b"abc")
++
++    create_recording("rec-zzz-valid", source="upload", source_filename="valid.mp3", settings=cfg)
++    valid_raw = cfg.recordings_root / "rec-zzz-valid" / "raw" / "audio.mp3"
++    valid_raw.parent.mkdir(parents=True, exist_ok=True)
++    valid_raw.write_bytes(b"abc")
++
++    client = TestClient(api.app)
++    response = client.post(
++        "/api/uploads",
++        files={"file": ("meeting.mp3", b"abc", "audio/mpeg")},
++    )
++    assert response.status_code == 200
++    payload = response.json()
++
++    assert payload["recording_id"] == "rec-zzz-valid"
++    items, total = list_recordings(settings=cfg)
++    assert total == 1
++    assert items[0]["id"] == "rec-zzz-valid"
++    assert observed == [
++        {
++            "recording_id": "rec-zzz-valid",
++            "job_type": JOB_TYPE_PRECHECK,
++            "force_reprocess": True,
++        }
++    ]
++    assert "duplicate upload matched raw audio for rec-aaa-orphan" in caplog.text
++
++
+ def test_reupload_active_job_conflict_returns_409(tmp_path: Path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)

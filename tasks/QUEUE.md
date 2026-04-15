@@ -776,6 +776,6 @@ Queue (in order)
 - Depends on: PR-LLM-INLINE-EXECUTION-01
 
 155) PR-REUPLOAD-REPROCESS-01: Force full reprocess when re-uploading an existing audio file
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-REUPLOAD-REPROCESS-01.md
 - Depends on: PR-FORCE-REPROCESS-01
