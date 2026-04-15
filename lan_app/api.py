@@ -63,6 +63,7 @@ from .ops import RecordingDeleteError, delete_recording_with_artifacts
 from .reaper import run_stuck_job_reaper_once
 from .uploads import (
     ALLOWED_UPLOAD_EXTENSIONS,
+    find_matching_upload_recording,
     infer_upload_capture_time,
     safe_filename,
     suffix_from_name,
@@ -535,6 +536,7 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
     raw_dir = recording_dir / "raw"
     dest = raw_dir / f"audio{ext}"
     completed = False
+    cleanup_uploaded_recording_dir = False
     recording_created = False
 
     try:
@@ -547,6 +549,42 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
             file.filename or "",
             upload_capture_timezone=_settings.upload_capture_tzinfo(),
         )
+        matched_recording_id = find_matching_upload_recording(
+            dest,
+            settings=_settings,
+        )
+        if matched_recording_id is not None:
+            cleanup_uploaded_recording_dir = True
+            existing = get_recording(matched_recording_id, settings=_settings)
+            _logger.info(
+                "re-upload detected for %s, clearing derived artifacts for full reprocess",
+                matched_recording_id,
+            )
+            try:
+                job = enqueue_recording_job(
+                    matched_recording_id,
+                    job_type=JOB_TYPE_PRECHECK,
+                    force_reprocess=True,
+                    settings=_settings,
+                )
+            except DuplicateRecordingJobError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "A precheck job is already queued or started for this recording.",
+                        "existing_job_id": exc.job_id,
+                    },
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}")
+
+            completed = True
+            return {
+                "recording_id": matched_recording_id,
+                "job_id": job.job_id,
+                "captured_at": str(existing["captured_at"]),
+                "bytes_written": bytes_written,
+            }
         create_recording(
             recording_id,
             source="upload",
@@ -599,7 +637,7 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
         raise HTTPException(status_code=503, detail=f"Upload failed: {exc}")
     finally:
         await file.close()
-        if not completed and recording_dir.exists():
+        if (not completed or cleanup_uploaded_recording_dir) and recording_dir.exists():
             shutil.rmtree(recording_dir, ignore_errors=True)
         if not completed and recording_created:
             with suppress(Exception):
