@@ -5,7 +5,6 @@ Uses Jinja2 templates + HTMX (bundled locally) for a minimal, DB-window-style UI
 
 from __future__ import annotations
 
-import asyncio
 from datetime import date, datetime, time, timedelta, timezone
 import json
 import logging
@@ -35,7 +34,6 @@ from .calendar.ics import validate_ics_url
 from .calendar.matching import (
     calendar_match_candidates,
     calendar_match_warnings,
-    calendar_summary_context,
     selected_calendar_candidate,
 )
 from .calendar.service import (
@@ -43,12 +41,13 @@ from .calendar.service import (
     redacted_calendar_source,
     sync_calendar_source,
 )
-from .conversation_metrics import refresh_recording_metrics
 from .constants import (
     DEFAULT_REQUEUE_JOB_TYPE,
     JOB_STATUS_FAILED,
+    JOB_STATUS_STARTED,
     JOB_STATUSES,
     JOB_STATUS_QUEUED,
+    JOB_TYPE_LLM,
     JOB_TYPE_PRECHECK,
     RECORDING_STATUSES,
     RECORDING_STATUS_FAILED,
@@ -86,6 +85,7 @@ from .db import (
     delete_project,
     delete_voice_profile,
     finish_job_if_queued,
+    find_active_job_for_recording,
     get_calendar_match,
     get_meeting_metrics,
     get_job,
@@ -119,6 +119,7 @@ from .exporter import _format_timestamp, build_export_zip_bytes, build_onenote_m
 from .jobs import (
     DuplicateRecordingJobError,
     enqueue_recording_job,
+    enqueue_recording_resummarize_job,
     purge_pending_recording_jobs,
 )
 from .ops import RecordingDeleteError, delete_recording_with_artifacts
@@ -131,14 +132,9 @@ from .snippet_repair import (
     assess_snippet_repair,
     repair_recording_snippets,
 )
+from .resummarize import resummarize_recording
 from .system_status import collect_control_center_runtime_status
 from lan_transcriber.artifacts import atomic_write_json
-from lan_transcriber.llm_client import LLMClient
-from lan_transcriber.pipeline import Settings as PipelineSettings
-from lan_transcriber.pipeline import (
-    build_structured_summary_prompts,
-    build_summary_payload,
-)
 from lan_transcriber.pipeline_steps.precheck import (
     _audio_duration_from_ffprobe,
     _audio_duration_from_wave,
@@ -1015,6 +1011,62 @@ def _summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]
             "types": question_types,
             "extracted": extracted_questions,
         },
+    }
+
+
+def _summary_refresh_context(
+    *,
+    jobs: list[dict[str, Any]],
+    stage_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    active_job = next(
+        (
+            row
+            for row in jobs
+            if str(row.get("type") or "").strip() == JOB_TYPE_LLM
+            and str(row.get("status") or "").strip()
+            in {JOB_STATUS_QUEUED, JOB_STATUS_STARTED}
+        ),
+        None,
+    )
+    llm_stage_row = next(
+        (
+            row
+            for row in stage_rows
+            if str(row.get("stage_name") or "").strip() == "llm_extract"
+        ),
+        None,
+    )
+    stage_metadata = (
+        llm_stage_row.get("metadata_json")
+        if isinstance(llm_stage_row, dict)
+        and isinstance(llm_stage_row.get("metadata_json"), dict)
+        else {}
+    )
+    is_resummarize_stage = (
+        str(stage_metadata.get("operation") or "").strip() == "resummarize_only"
+    )
+    is_active = active_job is not None
+    is_started = (
+        is_active and str(active_job.get("status") or "").strip() == JOB_STATUS_STARTED
+    )
+    is_queued = (
+        is_active and str(active_job.get("status") or "").strip() == JOB_STATUS_QUEUED
+    )
+    status_label = "Running" if is_started else ("Queued" if is_queued else "")
+    if is_started:
+        message = "Regenerating summary..."
+    elif is_queued:
+        message = "Resummarize queued..."
+    else:
+        message = ""
+    return {
+        "active": is_active,
+        "queued": is_queued,
+        "running": is_started,
+        "status_label": status_label,
+        "message": message,
+        "is_resummarize_stage": is_resummarize_stage,
     }
 
 
@@ -3137,92 +3189,11 @@ def _resummarize_recording(
     settings: AppSettings,
     target_summary_language: str | None,
 ) -> None:
-    transcript_path, summary_path = _recording_derived_paths(recording_id, settings)
-    speaker_turns_path = transcript_path.parent / "speaker_turns.json"
-    transcript_payload = _load_json_dict(transcript_path)
-    if not transcript_payload:
-        raise ValueError("No transcript.json found for this recording")
-
-    transcript_text = str(transcript_payload.get("text") or "").strip()
-    if not transcript_text:
-        raise ValueError("Transcript text is empty; re-transcribe first")
-
-    language_payload = transcript_payload.get("language")
-    language_obj = language_payload if isinstance(language_payload, dict) else {}
-    resolved_target = (
-        target_summary_language
-        or _normalise_language_code(transcript_payload.get("target_summary_language"))
-        or _normalise_language_code(transcript_payload.get("dominant_language"))
-        or _normalise_language_code(language_obj.get("detected"))
-        or "en"
-    )
-    pipeline_settings = PipelineSettings(
-        recordings_root=settings.recordings_root,
-        voices_dir=settings.data_root / "voices",
-        unknown_dir=settings.recordings_root / "unknown",
-        tmp_root=settings.data_root / "tmp",
-        llm_model=settings.llm_model,
-    )
-    speaker_turns_raw = _load_json_list(speaker_turns_path)
-    speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
-    if not speaker_turns:
-        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
-    if not speaker_turns:
-        speaker_turns = [
-            {"start": 0.0, "end": 0.0, "speaker": "S1", "text": transcript_text}
-        ]
-
-    calendar_title, calendar_attendees = calendar_summary_context(
+    resummarize_recording(
         recording_id,
         settings=settings,
+        target_summary_language=target_summary_language,
     )
-    if calendar_title is None and not calendar_attendees:
-        calendar_title = (
-            str(transcript_payload.get("calendar_title") or "").strip() or None
-        )
-        attendees_payload = transcript_payload.get("calendar_attendees")
-        if isinstance(attendees_payload, list):
-            calendar_attendees = [
-                str(attendee).strip()
-                for attendee in attendees_payload
-                if str(attendee).strip()
-            ]
-
-    system_prompt, user_prompt = build_structured_summary_prompts(
-        speaker_turns,
-        resolved_target,
-        calendar_title=calendar_title,
-        calendar_attendees=calendar_attendees,
-    )
-    message = asyncio.run(
-        LLMClient().generate(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=pipeline_settings.llm_model,
-            response_format={"type": "json_object"},
-        )
-    )
-    raw_summary = (
-        message.get("content", "") if isinstance(message, dict) else str(message)
-    )
-
-    summary_payload = _load_json_dict(summary_path)
-    friendly = summary_payload.get("friendly")
-    if not isinstance(friendly, int):
-        friendly = 0
-    structured_payload = build_summary_payload(
-        raw_llm_content=raw_summary,
-        model=pipeline_settings.llm_model,
-        target_summary_language=resolved_target,
-        friendly=friendly,
-        default_topic=calendar_title or "Meeting summary",
-    )
-    summary_payload.update(structured_payload)
-    atomic_write_json(summary_path, summary_payload)
-
-    transcript_payload["target_summary_language"] = resolved_target
-    atomic_write_json(transcript_path, transcript_payload)
-    refresh_recording_metrics(recording_id, settings=settings)
 
 
 def _status_counts(settings: AppSettings) -> dict[str, int]:
@@ -4673,6 +4644,7 @@ def _recording_inspector_context(
     stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
     chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
     pipeline_stages = _pipeline_stage_rows_for_display(recording_id, rows=stage_rows)
+    summary_refresh = _summary_refresh_context(jobs=jobs, stage_rows=stage_rows)
     diagnostics = _recording_diagnostics_context(
         recording=rec,
         stage_rows=stage_rows,
@@ -4681,6 +4653,11 @@ def _recording_inspector_context(
     )
     if diagnostics["primary_reason_text"]:
         rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
+    if summary_refresh["active"]:
+        rec["stop_eligible"] = True
+        rec["stop_in_progress"] = bool(
+            str(rec.get("cancel_requested_at") or "").strip()
+        )
     if is_embedded:
         embedded_recording_details = _embedded_recording_details_context(
             recording_id,
@@ -4695,6 +4672,7 @@ def _recording_inspector_context(
         if calendar_error.strip():
             calendar["error_message"] = calendar_error.strip()
         language = _language_tab_context(recording_id, rec, _settings)
+        language["summary_refresh"] = summary_refresh
         project = _project_tab_context(recording_id, rec, _settings)
         rec = _prepare_recording_for_display(
             get_recording(recording_id, settings=_settings) or rec,
@@ -4713,6 +4691,7 @@ def _recording_inspector_context(
         speakers["manage_voices_href"] = "/voices"
     if safe_tab == "summary":
         summary = _summary_context(recording_id, _settings)
+        summary["refresh"] = summary_refresh
     if not is_embedded and safe_tab == "summary":
         metrics = _metrics_tab_context(recording_id, _settings)
     if safe_tab == "overview":
@@ -4740,6 +4719,10 @@ def _recording_inspector_context(
         f"/ui/recordings/{quote(recording_id, safe='')}/progress?tab="
         f"{quote(safe_tab, safe='')}"
     )
+    body_url = (
+        f"/ui/recordings/{quote(recording_id, safe='')}/body?tab="
+        f"{quote(safe_tab, safe='')}"
+    )
     embedded_return_queries = {value: "" for value in _CONTROL_CENTER_TABS}
     if is_embedded:
         current_return_query = _control_center_return_query(
@@ -4760,6 +4743,7 @@ def _recording_inspector_context(
             )
             for value in _CONTROL_CENTER_TABS
         }
+        body_url = f"{body_url}&{current_return_query.lstrip('?')}"
         if speakers is not None:
             speakers["manage_voices_href"] = _workflow_page_href(
                 "/voices",
@@ -4771,6 +4755,9 @@ def _recording_inspector_context(
                 limit=control_center_state["limit"],
                 offset=control_center_state["offset"],
             )
+    if summary_refresh["active"]:
+        rec["stop_eligible"] = True
+        rec["stop_in_progress"] = bool(str(rec.get("cancel_requested_at") or "").strip())
     selected_recording_shell = _selected_recording_summary_shell_context(
         rec,
         current_tab=safe_tab,
@@ -4805,12 +4792,20 @@ def _recording_inspector_context(
             "embedded": is_embedded,
             "auto_refresh": bool(
                 is_embedded
-                and str(rec.get("status") or "").strip()
-                in {
-                    RECORDING_STATUS_QUEUED,
-                    RECORDING_STATUS_PROCESSING,
-                    RECORDING_STATUS_STOPPING,
-                }
+                and (
+                    str(rec.get("status") or "").strip()
+                    in {
+                        RECORDING_STATUS_QUEUED,
+                        RECORDING_STATUS_PROCESSING,
+                        RECORDING_STATUS_STOPPING,
+                    }
+                    or summary_refresh["active"]
+                )
+            ),
+            "auto_refresh_body": bool(
+                (not is_embedded)
+                and summary_refresh["active"]
+                and safe_tab in {"summary", "diagnostics"}
             ),
             "tabs": _recording_inspector_tabs_context(
                 recording_id,
@@ -4818,6 +4813,7 @@ def _recording_inspector_context(
                 inspector_mode=inspector_mode,
                 control_center_state=control_center_state,
             ),
+            "body_url": body_url,
             "progress_url": progress_url,
             "embedded_return_queries": embedded_return_queries,
         },
@@ -5637,6 +5633,31 @@ async def ui_recording_detail(
             ),
             **inspector_context,
         },
+    )
+
+
+@ui_router.get("/ui/recordings/{recording_id}/body", response_class=HTMLResponse)
+async def ui_recording_detail_body(
+    request: Request,
+    recording_id: str,
+    tab: str = Query(default="overview"),
+    calendar_error: str = Query(default=""),
+    speakers_notice: str = Query(default=""),
+    speakers_error: str = Query(default=""),
+) -> Any:
+    inspector_context = _recording_inspector_context(
+        recording_id,
+        current_tab=tab,
+        calendar_error=calendar_error,
+        speakers_notice=speakers_notice,
+        speakers_error=speakers_error,
+    )
+    if inspector_context is None:
+        return HTMLResponse("Not found", status_code=404)
+    return templates.TemplateResponse(
+        request,
+        "partials/recording_inspector_body.html",
+        inspector_context,
     )
 
 
@@ -6967,7 +6988,53 @@ async def ui_action_stop(
 
     redirect_path = _recording_detail_path(recording_id, tab=tab)
     current_status = str(rec.get("status") or "").strip()
-    if current_status not in _STOP_ELIGIBLE_RECORDING_STATUSES:
+    active_resummarize_job = find_active_job_for_recording(
+        recording_id,
+        job_type=JOB_TYPE_LLM,
+        settings=_settings,
+    )
+    if (
+        current_status not in _STOP_ELIGIBLE_RECORDING_STATUSES
+        and active_resummarize_job is None
+    ):
+        return _ui_recording_post_response(
+            request,
+            return_to=return_to,
+            redirect_to=redirect_path,
+        )
+
+    if (
+        active_resummarize_job is not None
+        and current_status not in _STOP_ELIGIBLE_RECORDING_STATUSES
+    ):
+        job_status = str(active_resummarize_job.get("status") or "").strip()
+        job_id = str(active_resummarize_job.get("id") or "").strip()
+        if job_status == JOB_STATUS_QUEUED:
+            if job_id:
+                try:
+                    purge_pending_recording_jobs(recording_id, settings=_settings)
+                except Exception as exc:
+                    return HTMLResponse(
+                        f"Stop failed (queue unavailable): {exc}", status_code=503
+                    )
+                finish_job_if_queued(
+                    job_id,
+                    error="cancelled_by_user",
+                    settings=_settings,
+                )
+            return _ui_recording_post_response(
+                request,
+                return_to=return_to,
+                redirect_to=redirect_path,
+            )
+        if not str(rec.get("cancel_requested_at") or "").strip():
+            set_recording_cancel_request(
+                recording_id,
+                requested_by=_STOP_REQUESTED_BY,
+                reason_code=_STOP_REASON_CODE,
+                reason_text=_STOP_REQUEST_REASON_TEXT,
+                settings=_settings,
+            )
         return _ui_recording_post_response(
             request,
             return_to=return_to,
@@ -7361,16 +7428,19 @@ async def ui_resummarize_language(
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
     try:
-        target, _transcript_override = _save_language_settings(
+        _save_language_settings(
             recording_id,
             target_summary_language=target_summary_language,
             transcript_language_override=transcript_language_override,
         )
-        await run_in_threadpool(
-            _resummarize_recording,
+        enqueue_recording_resummarize_job(
             recording_id,
             settings=_settings,
-            target_summary_language=target,
+        )
+    except DuplicateRecordingJobError as exc:
+        return HTMLResponse(
+            f"Re-summarize already active for this recording ({exc.job_id})",
+            status_code=409,
         )
     except ValueError as exc:
         return HTMLResponse(str(exc), status_code=422)

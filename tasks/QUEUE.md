@@ -771,7 +771,7 @@ Queue (in order)
 - Depends on: PR-NOISE-SPEAKER-FILTER-01
 
 154) PR-UI-LLM-ASYNC-01: Move LLM resummarize out of synchronous UI request into background job
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-LLM-ASYNC-01.md
 - Depends on: PR-LLM-INLINE-EXECUTION-01
 

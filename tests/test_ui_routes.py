@@ -58,6 +58,7 @@ from lan_app.constants import (
     JOB_STATUS_FINISHED,
     JOB_STATUS_QUEUED,
     JOB_STATUS_STARTED,
+    JOB_TYPE_LLM,
     JOB_TYPE_PRECHECK,
     JOB_TYPE_STT,
     RECORDING_STATUS_FAILED,
@@ -4138,6 +4139,203 @@ def test_ui_action_stop_duplicate_request_does_not_corrupt_existing_stop_request
     assert after["cancel_reason_text"] == "Stop requested by user"
 
 
+def test_ui_action_stop_active_resummarize_job_sets_cancel_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-rsum-1",
+        source="upload",
+        source_filename="summary.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    create_job(
+        "job-stop-rsum-1",
+        recording_id="rec-stop-rsum-1",
+        job_type=JOB_TYPE_LLM,
+        settings=cfg,
+        status=JOB_STATUS_STARTED,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-stop-rsum-1/stop", data={"tab": "summary"})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/recordings/rec-stop-rsum-1?tab=summary"
+
+    recording = get_recording("rec-stop-rsum-1", settings=cfg) or {}
+    job = ui_routes.get_job("job-stop-rsum-1", settings=cfg) or {}
+    assert recording["status"] == RECORDING_STATUS_READY
+    assert recording["cancel_requested_by"] == "user"
+    assert recording["cancel_reason_text"] == "Stop requested by user"
+    assert job["status"] == JOB_STATUS_STARTED
+
+
+def test_ui_action_stop_queued_resummarize_job_finishes_without_status_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-rsum-queued-1",
+        source="upload",
+        source_filename="summary.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    create_job(
+        "job-stop-rsum-queued-1",
+        recording_id="rec-stop-rsum-queued-1",
+        job_type=JOB_TYPE_LLM,
+        settings=cfg,
+        status=JOB_STATUS_QUEUED,
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "purge_pending_recording_jobs",
+        lambda *_args, **_kwargs: 1,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-stop-rsum-queued-1/stop", data={"tab": "summary"})
+    assert r.status_code == 303
+
+    recording = get_recording("rec-stop-rsum-queued-1", settings=cfg) or {}
+    job = ui_routes.get_job("job-stop-rsum-queued-1", settings=cfg) or {}
+    assert recording["status"] == RECORDING_STATUS_READY
+    assert not recording["cancel_requested_at"]
+    assert job["status"] == JOB_STATUS_FINISHED
+    assert job["error"] == "cancelled_by_user"
+
+
+def test_ui_action_stop_queued_resummarize_job_returns_503_when_purge_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-rsum-queued-fail-1",
+        source="upload",
+        source_filename="summary.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    create_job(
+        "job-stop-rsum-queued-fail-1",
+        recording_id="rec-stop-rsum-queued-fail-1",
+        job_type=JOB_TYPE_LLM,
+        settings=cfg,
+        status=JOB_STATUS_QUEUED,
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "purge_pending_recording_jobs",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("redis down")),
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-stop-rsum-queued-fail-1/stop",
+        data={"tab": "summary"},
+    )
+    assert r.status_code == 503
+    assert "redis down" in r.text
+
+
+def test_ui_action_stop_queued_resummarize_job_without_job_id_skips_queue_ops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-rsum-no-job-id-1",
+        source="upload",
+        source_filename="summary.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "find_active_job_for_recording",
+        lambda *_a, **_k: {"id": "", "status": JOB_STATUS_QUEUED},
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "purge_pending_recording_jobs",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("should not purge")),
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "finish_job_if_queued",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("should not finish")),
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-stop-rsum-no-job-id-1/stop",
+        data={"tab": "summary"},
+    )
+    assert r.status_code == 303
+
+
+def test_ui_action_stop_active_resummarize_job_preserves_existing_cancel_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-rsum-existing-cancel-1",
+        source="upload",
+        source_filename="summary.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    create_job(
+        "job-stop-rsum-existing-cancel-1",
+        recording_id="rec-stop-rsum-existing-cancel-1",
+        job_type=JOB_TYPE_LLM,
+        settings=cfg,
+        status=JOB_STATUS_STARTED,
+    )
+    set_recording_cancel_request(
+        "rec-stop-rsum-existing-cancel-1",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="already requested",
+        settings=cfg,
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "set_recording_cancel_request",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("should not rewrite cancel request")
+        ),
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-stop-rsum-existing-cancel-1/stop",
+        data={"tab": "summary"},
+    )
+    assert r.status_code == 303
+
+
 def test_ui_action_delete(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
@@ -4477,7 +4675,9 @@ def test_ui_action_retry_failed_step_rejects_non_failed_job(tmp_path, monkeypatc
     assert "failed jobs" in r.text
 
 
-def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeypatch):
+def test_ui_language_resummarize_enqueues_background_job_and_saves_override(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -4511,49 +4711,14 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
         json.dumps({"friendly": 0, "model": "test-llm-model", "summary": "- old"}),
         encoding="utf-8",
     )
+    called: dict[str, object] = {}
 
-    captured: dict[str, str] = {}
+    def _fake_enqueue(recording_id: str, *, settings=None):
+        called["recording_id"] = recording_id
+        called["settings"] = settings
+        return None
 
-    async def _fake_generate(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        model: str | None = None,
-        response_format: dict[str, object] | None = None,
-    ):
-        captured["system_prompt"] = system_prompt
-        captured["model"] = model or ""
-        return {
-            "content": json.dumps(
-                {
-                    "topic": "Resumen semanal",
-                    "summary_bullets": ["Bloqueadores revisados."],
-                    "decisions": ["Publicar el viernes."],
-                    "action_items": [
-                        {
-                            "task": "Enviar notas",
-                            "owner": "Alex",
-                            "deadline": "2026-02-23",
-                            "confidence": 0.85,
-                        }
-                    ],
-                    "emotional_summary": "Enfoque positivo.",
-                    "questions": {
-                        "total_count": 1,
-                        "types": {
-                            "open": 0,
-                            "yes_no": 0,
-                            "clarification": 1,
-                            "status": 0,
-                            "decision_seeking": 0,
-                        },
-                        "extracted": ["Quien valida QA?"],
-                    },
-                }
-            )
-        }
-
-    monkeypatch.setattr(ui_routes.LLMClient, "generate", _fake_generate)
+    monkeypatch.setattr(ui_routes, "enqueue_recording_resummarize_job", _fake_enqueue)
     c = TestClient(api.app, follow_redirects=False)
     r = c.post(
         "/ui/recordings/rec-lang-rsum-1/language/resummarize",
@@ -4568,16 +4733,12 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
     assert recording is not None
     assert recording["target_summary_language"] == "es"
     assert recording["language_override"] == "en"
-
+    assert called == {"recording_id": "rec-lang-rsum-1", "settings": cfg}
     summary_payload = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
-    assert summary_payload["summary_bullets"] == ["Bloqueadores revisados."]
-    assert summary_payload["topic"] == "Resumen semanal"
-    assert summary_payload["target_summary_language"] == "es"
-    assert captured["model"] == cfg.llm_model
-    assert "in Spanish." in captured["system_prompt"]
+    assert summary_payload["summary"] == "- old"
 
 
-def test_ui_language_resummarize_without_speaker_turns_uses_full_transcript(
+def test_ui_language_resummarize_duplicate_job_returns_409(
     tmp_path, monkeypatch
 ):
     cfg = _cfg(tmp_path)
@@ -4585,71 +4746,200 @@ def test_ui_language_resummarize_without_speaker_turns_uses_full_transcript(
     monkeypatch.setattr(ui_routes, "_settings", cfg)
     init_db(cfg)
     create_recording(
-        "rec-lang-rsum-legacy-1",
+        "rec-lang-rsum-dup-1",
         source="drive",
-        source_filename="legacy.mp3",
+        source_filename="dup.mp3",
         status=RECORDING_STATUS_READY,
         settings=cfg,
     )
-
-    derived = cfg.recordings_root / "rec-lang-rsum-legacy-1" / "derived"
+    derived = cfg.recordings_root / "rec-lang-rsum-dup-1" / "derived"
     derived.mkdir(parents=True, exist_ok=True)
-    long_text = " ".join(f"token{i}" for i in range(260))
-    normalized_long_text = " ".join(long_text.split())
     (derived / "transcript.json").write_text(
-        json.dumps(
-            {
-                "text": long_text,
-                "language": {"detected": "en", "confidence": 0.9},
-                "dominant_language": "en",
-            }
-        ),
-        encoding="utf-8",
-    )
-    (derived / "summary.json").write_text(
-        json.dumps({"friendly": 0, "model": "test-llm-model", "summary": "- old"}),
+        json.dumps({"text": "hello world"}),
         encoding="utf-8",
     )
 
-    captured: dict[str, str] = {}
+    def _raise_duplicate(recording_id: str, *, settings=None):
+        raise ui_routes.DuplicateRecordingJobError(
+            recording_id=recording_id,
+            job_id="job-dup-rsum",
+        )
 
-    async def _fake_generate(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        model: str | None = None,
-        response_format: dict[str, object] | None = None,
-    ):
-        captured["user_prompt"] = user_prompt
-        return {
-            "content": json.dumps(
-                {
-                    "topic": "Legacy",
-                    "summary_bullets": ["ok"],
-                    "decisions": [],
-                    "action_items": [],
-                    "emotional_summary": "Neutral.",
-                    "questions": {"total_count": 0, "types": {}, "extracted": []},
-                }
-            )
-        }
-
-    monkeypatch.setattr(ui_routes.LLMClient, "generate", _fake_generate)
+    monkeypatch.setattr(ui_routes, "enqueue_recording_resummarize_job", _raise_duplicate)
     c = TestClient(api.app, follow_redirects=False)
     r = c.post(
-        "/ui/recordings/rec-lang-rsum-legacy-1/language/resummarize",
+        "/ui/recordings/rec-lang-rsum-dup-1/language/resummarize",
         data={
             "target_summary_language": "en",
             "transcript_language_override": "",
         },
     )
-    assert r.status_code == 303
+    assert r.status_code == 409
+    assert "job-dup-rsum" in r.text
 
-    prompt_payload = json.loads(captured["user_prompt"])
-    speaker_turns = prompt_payload["speaker_turns"]
-    assert len(speaker_turns) > 1
-    reconstructed = " ".join(str(turn["text"]) for turn in speaker_turns)
-    assert reconstructed == normalized_long_text
+
+def test_ui_language_resummarize_validation_error_returns_422(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-lang-rsum-bad-1",
+        source="drive",
+        source_filename="bad.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-lang-rsum-bad-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps({"text": "hello world"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "enqueue_recording_resummarize_job",
+        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("bad request")),
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-lang-rsum-bad-1/language/resummarize",
+        data={"target_summary_language": "en"},
+    )
+    assert r.status_code == 422
+    assert "bad request" in r.text
+
+
+def test_recording_detail_summary_polls_while_resummarize_job_is_active(
+    tmp_path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-rsum-ui-1",
+        source="drive",
+        source_filename="summary.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-rsum-ui-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text(
+        json.dumps({"topic": "Old summary", "summary": "- old"}),
+        encoding="utf-8",
+    )
+    create_job(
+        "job-rsum-ui-1",
+        recording_id="rec-rsum-ui-1",
+        job_type=JOB_TYPE_LLM,
+        status=JOB_STATUS_STARTED,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    page = c.get("/recordings/rec-rsum-ui-1?tab=summary")
+    assert page.status_code == 200
+    assert '/ui/recordings/rec-rsum-ui-1/body?tab=summary' in page.text
+    assert 'id="recording-inspector-body"' in page.text
+    assert 'hx-swap="outerHTML"' in page.text
+    assert "Regenerating summary..." in page.text
+
+    body = c.get("/ui/recordings/rec-rsum-ui-1/body?tab=diagnostics")
+    assert body.status_code == 200
+    assert '/ui/recordings/rec-rsum-ui-1/body?tab=diagnostics' in body.text
+    assert "Resummarize queued" not in body.text
+    assert "Regenerating summary..." in body.text
+
+
+def test_recording_detail_body_stops_polling_after_resummarize_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-rsum-ui-stop-poll-1",
+        source="drive",
+        source_filename="summary.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-rsum-ui-stop-poll-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text(
+        json.dumps({"topic": "Old summary", "summary": "- old"}),
+        encoding="utf-8",
+    )
+    create_job(
+        "job-rsum-ui-stop-poll-1",
+        recording_id="rec-rsum-ui-stop-poll-1",
+        job_type=JOB_TYPE_LLM,
+        status=JOB_STATUS_STARTED,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    active_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
+    assert active_body.status_code == 200
+    assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' in active_body.text
+    assert 'hx-trigger="every 2s"' in active_body.text
+    assert 'hx-trigger="load, every 2s"' not in active_body.text
+
+    monkeypatch.setattr(
+        ui_routes,
+        "list_jobs",
+        lambda **_kwargs: ([], 0),
+    )
+
+    settled_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
+    assert settled_body.status_code == 200
+    assert 'hx-trigger="every 2s"' not in settled_body.text
+    assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' not in settled_body.text
+
+
+def test_recording_detail_summary_shows_queued_resummarize_state(
+    tmp_path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-rsum-ui-queued-1",
+        source="drive",
+        source_filename="summary.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-rsum-ui-queued-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text(
+        json.dumps({"topic": "Old summary", "summary": "- old"}),
+        encoding="utf-8",
+    )
+    create_job(
+        "job-rsum-ui-queued-1",
+        recording_id="rec-rsum-ui-queued-1",
+        job_type=JOB_TYPE_LLM,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    page = c.get("/recordings/rec-rsum-ui-queued-1?tab=summary")
+    assert page.status_code == 200
+    assert "Resummarize queued..." in page.text
+
+    missing = c.get("/ui/recordings/missing/body?tab=summary")
+    assert missing.status_code == 404
 
 
 def test_ui_language_retranscribe_enqueues_precheck_and_saves_overrides(

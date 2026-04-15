@@ -4,6 +4,17 @@
 {% set participants = metrics_data.participants or [] %}
 {% set questions = summary_data.questions or {} %}
 {% set question_types = questions.types or {} %}
+{% set refresh = summary_data.refresh or {} %}
+
+{% if refresh.active %}
+<div class="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 flex items-center gap-2">
+  <span class="inline-flex size-2 rounded-full bg-blue-500 animate-pulse"></span>
+  <span>{{ refresh.message or 'Regenerating summary...' }}</span>
+  {% if refresh.status_label %}
+  <span class="text-xs text-blue-700">({{ refresh.status_label }})</span>
+  {% endif %}
+</div>
+{% endif %}
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
   <!-- Summary -->

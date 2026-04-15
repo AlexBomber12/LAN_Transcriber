@@ -19,6 +19,7 @@ from lan_app.constants import (
     JOB_STATUS_FAILED,
     JOB_STATUS_STARTED,
     JOB_TYPE_CLEANUP,
+    JOB_TYPE_LLM,
     JOB_TYPE_PRECHECK,
     JOB_TYPE_PUBLISH,
     JOB_TYPE_STT,
@@ -4066,6 +4067,376 @@ def test_process_job_converts_completed_terminal_state_to_stopped_when_stop_requ
         "status": "Stopped",
         "error": "cancelled_by_user",
     }
+
+
+def test_process_job_resummarize_only_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_lightweight_process_job_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(worker_tasks, "_append_step_log", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_start_job_or_ignore_stale_execution",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "get_recording",
+        lambda *_a, **_k: {"id": "rec-rsum-success"},
+    )
+    started: list[dict[str, object]] = []
+    completed: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_started",
+        lambda recording_id, **kwargs: started.append(
+            {"recording_id": recording_id, **kwargs}
+        ),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_completed",
+        lambda recording_id, **kwargs: completed.append(
+            {"recording_id": recording_id, **kwargs}
+        ),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "resummarize_recording",
+        lambda *args, **kwargs: {"friendly": 1, "status": "ok"},
+    )
+    monkeypatch.setattr(worker_tasks, "_job_status", lambda *_a, **_k: JOB_STATUS_STARTED)
+    monkeypatch.setattr(worker_tasks, "finish_job_if_started", lambda *_a, **_k: True)
+
+    result = worker_tasks.process_job(
+        "job-rsum-success",
+        "rec-rsum-success",
+        JOB_TYPE_LLM,
+        resummarize_only=True,
+    )
+
+    assert result["status"] == "finished"
+    assert started[0]["stage_name"] == "llm_extract"
+    assert completed[0]["metadata"]["operation"] == "resummarize_only"
+
+
+def test_process_job_resummarize_only_ignored_when_start_is_stale(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_lightweight_process_job_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_start_job_or_ignore_stale_execution",
+        lambda **_kwargs: False,
+    )
+
+    ignored = worker_tasks.process_job(
+        "job-rsum-stale-start",
+        "rec-rsum-stale-start",
+        JOB_TYPE_LLM,
+        resummarize_only=True,
+    )
+
+    assert ignored["status"] == "ignored"
+
+
+def test_process_job_resummarize_only_missing_recording_fails_job(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_lightweight_process_job_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(worker_tasks, "_append_step_log", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_start_job_or_ignore_stale_execution",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(worker_tasks, "get_recording", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        worker_tasks,
+        "fail_job_if_started",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "root_cause_from_exception",
+        lambda exc: SimpleNamespace(code="missing_recording", detail=str(exc)),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_failed",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("should not mark stage when recording is missing")
+        ),
+    )
+
+    result = worker_tasks.process_job(
+        "job-rsum-missing",
+        "rec-rsum-missing",
+        JOB_TYPE_LLM,
+        resummarize_only=True,
+    )
+
+    assert result["status"] == "failed"
+
+
+def test_process_job_resummarize_only_ignored_when_job_status_goes_stale(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_lightweight_process_job_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(worker_tasks, "_append_step_log", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_start_job_or_ignore_stale_execution",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "get_recording",
+        lambda *_a, **_k: {"id": "rec-rsum-stale"},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_started",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "resummarize_recording",
+        lambda *args, **kwargs: {"friendly": 0, "status": "ok"},
+    )
+    monkeypatch.setattr(worker_tasks, "_job_status", lambda *_a, **_k: JOB_STATUS_FAILED)
+
+    ignored = worker_tasks.process_job(
+        "job-rsum-stale",
+        "rec-rsum-stale",
+        JOB_TYPE_LLM,
+        resummarize_only=True,
+    )
+
+    assert ignored["status"] == "ignored"
+
+
+def test_process_job_resummarize_only_raises_when_finish_job_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_lightweight_process_job_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(worker_tasks, "_append_step_log", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_start_job_or_ignore_stale_execution",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "get_recording",
+        lambda *_a, **_k: {"id": "rec-rsum-finish-missing"},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_started",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "resummarize_recording",
+        lambda *args, **kwargs: {"friendly": 0, "status": "ok"},
+    )
+    monkeypatch.setattr(worker_tasks, "_job_status", lambda *_a, **_k: JOB_STATUS_STARTED)
+    monkeypatch.setattr(worker_tasks, "mark_recording_pipeline_stage_completed", lambda *_a, **_k: None)
+    monkeypatch.setattr(worker_tasks, "mark_recording_pipeline_stage_failed", lambda *_a, **_k: None)
+    monkeypatch.setattr(worker_tasks, "finish_job_if_started", lambda *_a, **_k: False)
+    monkeypatch.setattr(worker_tasks, "fail_job_if_started", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        worker_tasks,
+        "root_cause_from_exception",
+        lambda exc: SimpleNamespace(code="llm_error", detail=str(exc)),
+    )
+
+    with pytest.raises(ValueError, match="Job not found"):
+        worker_tasks.process_job(
+            "job-rsum-finish-missing",
+            "rec-rsum-finish-missing",
+            JOB_TYPE_LLM,
+            resummarize_only=True,
+        )
+
+
+def test_process_job_resummarize_only_records_stop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_lightweight_process_job_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(worker_tasks, "_append_step_log", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_start_job_or_ignore_stale_execution",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "get_recording",
+        lambda *_a, **_k: {"id": "rec-rsum-stop"},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_started",
+        lambda *_a, **_k: None,
+    )
+    cancelled: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_cancelled",
+        lambda recording_id, **kwargs: cancelled.append(
+            {"recording_id": recording_id, **kwargs}
+        ),
+    )
+    acknowledged: list[str | None] = []
+    monkeypatch.setattr(
+        worker_tasks,
+        "_acknowledge_stop_requested",
+        lambda **kwargs: acknowledged.append(kwargs.get("reason_text")),
+    )
+    monkeypatch.setattr(worker_tasks, "finish_job_if_started", lambda *_a, **_k: True)
+
+    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
+        requested_at="2026-01-01T00:00:00Z",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+    )
+
+    def _raise_stop(*_args, **_kwargs):
+        raise worker_tasks.RecordingStopRequested(
+            stage_name="llm_extract",
+            checkpoint="during_generate",
+            stop_request=stop_request,
+            acknowledged_reason_text="Cancelled by user",
+        )
+
+    monkeypatch.setattr(worker_tasks, "resummarize_recording", _raise_stop)
+
+    result = worker_tasks.process_job(
+        "job-rsum-stop",
+        "rec-rsum-stop",
+        JOB_TYPE_LLM,
+        resummarize_only=True,
+    )
+
+    assert result["status"] == "stopped"
+    assert cancelled[0]["metadata"]["operation"] == "resummarize_only"
+    assert acknowledged == ["Cancelled by user"]
+
+
+def test_process_job_resummarize_only_records_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_lightweight_process_job_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(worker_tasks, "_append_step_log", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_start_job_or_ignore_stale_execution",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "get_recording",
+        lambda *_a, **_k: {"id": "rec-rsum-fail"},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_started",
+        lambda *_a, **_k: None,
+    )
+    failed: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_failed",
+        lambda recording_id, **kwargs: failed.append(
+            {"recording_id": recording_id, **kwargs}
+        ),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "fail_job_if_started",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "resummarize_recording",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("llm down")),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "root_cause_from_exception",
+        lambda exc: SimpleNamespace(code="llm_error", detail=str(exc)),
+    )
+
+    result = worker_tasks.process_job(
+        "job-rsum-fail",
+        "rec-rsum-fail",
+        JOB_TYPE_LLM,
+        resummarize_only=True,
+    )
+
+    assert result["status"] == "failed"
+    assert failed[0]["metadata"]["operation"] == "resummarize_only"
+
+
+def test_process_job_resummarize_only_reraises_when_fail_job_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_lightweight_process_job_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(worker_tasks, "_append_step_log", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_start_job_or_ignore_stale_execution",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "get_recording",
+        lambda *_a, **_k: {"id": "rec-rsum-fail-reraise"},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_started",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_failed",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "fail_job_if_started",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "resummarize_recording",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("llm down")),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "root_cause_from_exception",
+        lambda exc: SimpleNamespace(code="llm_error", detail=str(exc)),
+    )
+
+    with pytest.raises(RuntimeError, match="llm down"):
+        worker_tasks.process_job(
+            "job-rsum-fail-reraise",
+            "rec-rsum-fail-reraise",
+            JOB_TYPE_LLM,
+            resummarize_only=True,
+        )
 
 
 def test_cancel_aware_chunk_store_marks_cancelled_with_error_kwargs_against_db_store(

@@ -14,6 +14,7 @@ from lan_app.config import AppSettings
 from lan_app.constants import (
     DEFAULT_REQUEUE_JOB_TYPE,
     JOB_STATUS_QUEUED,
+    JOB_TYPE_LLM,
     JOB_TYPE_STT,
     RECORDING_STATUS_READY,
 )
@@ -623,6 +624,160 @@ def test_enqueue_recording_job_reraises_when_fail_job_also_fails(
 
     with pytest.raises(RuntimeError, match="redis-down"):
         jobs.enqueue_recording_job("rec-3", settings=cfg)
+
+
+def test_enqueue_recording_resummarize_job_queues_llm_worker(tmp_path: Path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(jobs, "init_db", lambda _cfg: None)
+    monkeypatch.setattr(jobs, "get_recording", lambda *_a, **_k: {"id": "rec-rsum"})
+    monkeypatch.setattr(jobs, "find_active_job_for_recording", lambda *_a, **_k: None)
+    created: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        jobs,
+        "create_job_if_no_active_for_recording",
+        lambda **kwargs: (created.append(kwargs) or {"id": kwargs["job_id"]}, None),
+    )
+    cleared: list[str] = []
+    monkeypatch.setattr(
+        jobs,
+        "clear_recording_cancel_request",
+        lambda recording_id, **_k: cleared.append(recording_id),
+    )
+
+    class _QueueOK:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def enqueue(self, *_args, **kwargs):
+            self.calls.append(kwargs)
+            return None
+
+    queue = _QueueOK()
+    monkeypatch.setattr(jobs, "get_queue", lambda _cfg: queue)
+
+    job = jobs.enqueue_recording_resummarize_job("rec-rsum", settings=cfg)
+
+    assert job.recording_id == "rec-rsum"
+    assert job.job_type == JOB_TYPE_LLM
+    assert created[0]["job_type"] == JOB_TYPE_LLM
+    assert queue.calls[0]["resummarize_only"] is True
+    assert cleared == ["rec-rsum"]
+
+
+def test_enqueue_recording_resummarize_job_rejects_active_pipeline(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(jobs, "init_db", lambda _cfg: None)
+    monkeypatch.setattr(jobs, "get_recording", lambda *_a, **_k: {"id": "rec-rsum"})
+    monkeypatch.setattr(
+        jobs,
+        "find_active_job_for_recording",
+        lambda *_a, **kwargs: {"id": "job-precheck"}
+        if kwargs.get("job_type") == DEFAULT_REQUEUE_JOB_TYPE
+        else None,
+    )
+
+    with pytest.raises(jobs.DuplicateRecordingJobError, match="job-precheck"):
+        jobs.enqueue_recording_resummarize_job("rec-rsum", settings=cfg)
+
+
+def test_enqueue_recording_resummarize_job_rejects_missing_recording(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(jobs, "init_db", lambda _cfg: None)
+    monkeypatch.setattr(jobs, "get_recording", lambda *_a, **_k: None)
+
+    with pytest.raises(jobs.RecordingNotFoundError, match="Recording not found"):
+        jobs.enqueue_recording_resummarize_job("rec-missing", settings=cfg)
+
+
+def test_enqueue_recording_resummarize_job_rejects_existing_llm_job(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(jobs, "init_db", lambda _cfg: None)
+    monkeypatch.setattr(jobs, "get_recording", lambda *_a, **_k: {"id": "rec-rsum"})
+    monkeypatch.setattr(jobs, "find_active_job_for_recording", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        jobs,
+        "create_job_if_no_active_for_recording",
+        lambda **_kwargs: (None, {"id": "job-llm"}),
+    )
+
+    with pytest.raises(jobs.DuplicateRecordingJobError, match="job-llm"):
+        jobs.enqueue_recording_resummarize_job("rec-rsum", settings=cfg)
+
+
+def test_enqueue_recording_resummarize_job_ignores_fail_job_errors(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(jobs, "init_db", lambda _cfg: None)
+    monkeypatch.setattr(jobs, "get_recording", lambda *_a, **_k: {"id": "rec-rsum"})
+    monkeypatch.setattr(jobs, "find_active_job_for_recording", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        jobs,
+        "create_job_if_no_active_for_recording",
+        lambda **kwargs: ({"id": kwargs["job_id"]}, None),
+    )
+    monkeypatch.setattr(
+        jobs,
+        "fail_job",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("fail-job-down")),
+    )
+
+    class _BrokenQueue:
+        def enqueue(self, *_args, **_kwargs):
+            raise RuntimeError("redis-down")
+
+    monkeypatch.setattr(jobs, "get_queue", lambda _cfg: _BrokenQueue())
+
+    with pytest.raises(RuntimeError, match="redis-down"):
+        jobs.enqueue_recording_resummarize_job("rec-rsum", settings=cfg)
+
+
+def test_enqueue_recording_resummarize_job_tolerates_active_rows_without_ids(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(jobs, "init_db", lambda _cfg: None)
+    monkeypatch.setattr(jobs, "get_recording", lambda *_a, **_k: {"id": "rec-rsum"})
+    monkeypatch.setattr(
+        jobs,
+        "find_active_job_for_recording",
+        lambda *_a, **kwargs: {"id": ""}
+        if kwargs.get("job_type") == DEFAULT_REQUEUE_JOB_TYPE
+        else None,
+    )
+    monkeypatch.setattr(
+        jobs,
+        "create_job_if_no_active_for_recording",
+        lambda **kwargs: ({"id": kwargs["job_id"]}, {"id": ""}),
+    )
+    monkeypatch.setattr(
+        jobs,
+        "clear_recording_cancel_request",
+        lambda *_a, **_k: None,
+    )
+
+    class _QueueOK:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def enqueue(self, *_args, **kwargs):
+            self.calls.append(kwargs)
+            return None
+
+    queue = _QueueOK()
+    monkeypatch.setattr(jobs, "get_queue", lambda _cfg: queue)
+
+    job = jobs.enqueue_recording_resummarize_job("rec-rsum", settings=cfg)
+
+    assert job.recording_id == "rec-rsum"
+    assert queue.calls[0]["job_id"] == job.job_id
 
 
 def test_ops_parse_and_iteration_branches(tmp_path: Path, monkeypatch):

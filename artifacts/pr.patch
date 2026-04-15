@@ -1,13 +1,36 @@
-diff --git a/ci-requirements.txt b/ci-requirements.txt
-index 7b9e2f2..955896e 100644
---- a/ci-requirements.txt
-+++ b/ci-requirements.txt
-@@ -54,7 +54,7 @@ iniconfig==2.3.0
-     # via pytest
- omegaconf==2.3.0
-     # via -r ci-requirements.in
--packaging==26.0
-+packaging==26.1
-     # via
-     #   build
-     #   pytest
+diff --git a/lan_app/templates/partials/recording_inspector_body.html b/lan_app/templates/partials/recording_inspector_body.html
+index e8ace57..2d6f18b 100644
+--- a/lan_app/templates/partials/recording_inspector_body.html
++++ b/lan_app/templates/partials/recording_inspector_body.html
+@@ -2,7 +2,7 @@
+   id="recording-inspector-body"
+   {% if recording_inspector.auto_refresh_body %}
+   hx-get="{{ recording_inspector.body_url }}"
+-  hx-trigger="load, every 2s"
++  hx-trigger="every 2s"
+   hx-swap="outerHTML"
+   {% endif %}
+ >
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 1ee4711..9bca96d 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -4890,7 +4890,8 @@ def test_recording_detail_body_stops_polling_after_resummarize_finishes(
+     active_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
+     assert active_body.status_code == 200
+     assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' in active_body.text
+-    assert 'hx-trigger="load, every 2s"' in active_body.text
++    assert 'hx-trigger="every 2s"' in active_body.text
++    assert 'hx-trigger="load, every 2s"' not in active_body.text
+ 
+     monkeypatch.setattr(
+         ui_routes,
+@@ -4900,7 +4901,7 @@ def test_recording_detail_body_stops_polling_after_resummarize_finishes(
+ 
+     settled_body = c.get("/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary")
+     assert settled_body.status_code == 200
+-    assert 'hx-trigger="load, every 2s"' not in settled_body.text
++    assert 'hx-trigger="every 2s"' not in settled_body.text
+     assert '/ui/recordings/rec-rsum-ui-stop-poll-1/body?tab=summary' not in settled_body.text
+ 
+ 
