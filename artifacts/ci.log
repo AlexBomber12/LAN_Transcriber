@@ -104,8 +104,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15475 sha256=47a7fd647bfb9f31943dc5edd2710774976be5035776b752acb0880712adaa57
-  Stored in directory: /tmp/pip-ephem-wheel-cache-g7iza6xs/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15475 sha256=935ef227ad79ba0bce1e66e2719b258fcfe3cda370b0985c9bf5ac2cc41c9f42
+  Stored in directory: /tmp/pip-ephem-wheel-cache-vf0pyrgc/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -121,23 +121,23 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
   warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
 ........................................................................ [  5%]
 ........................................................................ [ 10%]
-........................................................................ [ 16%]
+........................................................................ [ 15%]
 ........................................................................ [ 21%]
 ........................................................................ [ 26%]
-........................................................................ [ 32%]
+........................................................................ [ 31%]
 ........................................................................ [ 37%]
 ........................................................................ [ 42%]
-........................................................................ [ 48%]
+........................................................................ [ 47%]
 ........................................................................ [ 53%]
 ........................................................................ [ 58%]
-........................................................................ [ 64%]
+........................................................................ [ 63%]
 ........................................................................ [ 69%]
 ........................................s............................... [ 74%]
-........................................................................ [ 80%]
+........................................................................ [ 79%]
 ........................................................................ [ 85%]
 ........................................................................ [ 90%]
-........................................................................ [ 96%]
-......................................................                   [100%]
+........................................................................ [ 95%]
+.......................................................                  [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -176,13 +176,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   15408      0   5152      0   100%
+TOTAL   15412      0   5156      0   100%
 
 67 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1349 passed, 2 skipped, 11 warnings in 142.14s (0:02:22)
+1350 passed, 2 skipped, 11 warnings in 136.62s (0:02:16)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -220,7 +220,7 @@ TOTAL                                                    4860      0   1682     
 Name                               Stmts   Miss Branch BrPart  Cover
 --------------------------------------------------------------------
 lan_app/__init__.py                    1      0      0      0   100%
-lan_app/api.py                       356      0     82      0   100%
+lan_app/api.py                       360      0     86      0   100%
 lan_app/asr_glossary.py              224      0     98      0   100%
 lan_app/auth.py                       58      0     20      0   100%
 lan_app/calendar/__init__.py           4      0      0      0   100%
@@ -257,4 +257,4 @@ lan_app/worker_status.py              58      0      6      0   100%
 lan_app/worker_tasks.py             1853      0    536      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                              10548      0   3470      0   100%
+TOTAL                              10552      0   3474      0   100%

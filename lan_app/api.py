@@ -554,8 +554,16 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
             settings=_settings,
         )
         if matched_recording_id is not None:
-            cleanup_uploaded_recording_dir = True
             existing = get_recording(matched_recording_id, settings=_settings)
+            if existing is None:
+                _logger.warning(
+                    "duplicate upload matched raw audio for %s but no recording row exists; treating upload as new",
+                    matched_recording_id,
+                )
+                matched_recording_id = None
+            else:
+                cleanup_uploaded_recording_dir = True
+        if matched_recording_id is not None:
             _logger.info(
                 "re-upload detected for %s, clearing derived artifacts for full reprocess",
                 matched_recording_id,
