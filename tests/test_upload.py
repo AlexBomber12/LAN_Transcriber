@@ -429,6 +429,71 @@ def test_upload_ignores_filesystem_match_without_recording_row(
     assert "duplicate upload matched raw audio for rec-orphan" in caplog.text
 
 
+def test_reupload_skips_orphan_match_and_reuses_persisted_recording(
+    tmp_path: Path,
+    monkeypatch,
+    caplog,
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+    caplog.set_level("WARNING")
+
+    observed: list[dict[str, object]] = []
+
+    def _fake_enqueue(
+        recording_id: str,
+        *,
+        job_type: str = JOB_TYPE_PRECHECK,
+        force_reprocess: bool = False,
+        settings: AppSettings | None = None,
+    ) -> RecordingJob:
+        observed.append(
+            {
+                "recording_id": recording_id,
+                "job_type": job_type,
+                "force_reprocess": force_reprocess,
+            }
+        )
+        return RecordingJob(
+            job_id=f"job-{len(observed)}",
+            recording_id=recording_id,
+            job_type=job_type,
+        )
+
+    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
+
+    orphan_raw = cfg.recordings_root / "rec-aaa-orphan" / "raw" / "audio.mp3"
+    orphan_raw.parent.mkdir(parents=True, exist_ok=True)
+    orphan_raw.write_bytes(b"abc")
+
+    create_recording("rec-zzz-valid", source="upload", source_filename="valid.mp3", settings=cfg)
+    valid_raw = cfg.recordings_root / "rec-zzz-valid" / "raw" / "audio.mp3"
+    valid_raw.parent.mkdir(parents=True, exist_ok=True)
+    valid_raw.write_bytes(b"abc")
+
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/uploads",
+        files={"file": ("meeting.mp3", b"abc", "audio/mpeg")},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["recording_id"] == "rec-zzz-valid"
+    items, total = list_recordings(settings=cfg)
+    assert total == 1
+    assert items[0]["id"] == "rec-zzz-valid"
+    assert observed == [
+        {
+            "recording_id": "rec-zzz-valid",
+            "job_type": JOB_TYPE_PRECHECK,
+            "force_reprocess": True,
+        }
+    ]
+    assert "duplicate upload matched raw audio for rec-aaa-orphan" in caplog.text
+
+
 def test_reupload_active_job_conflict_returns_409(tmp_path: Path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)

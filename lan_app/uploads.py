@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+from collections.abc import Iterator
 from pathlib import Path
 import re
 import stat
@@ -171,12 +172,25 @@ def find_matching_upload_recording(
     *,
     settings: AppSettings,
 ) -> str | None:
+    for recording_id in iter_matching_upload_recordings(
+        upload_path,
+        settings=settings,
+    ):
+        return recording_id
+    return None
+
+
+def iter_matching_upload_recordings(
+    upload_path: Path,
+    *,
+    settings: AppSettings,
+) -> Iterator[str]:
     try:
         upload_stat = upload_path.stat()
     except OSError:
-        return None
+        return
     if not stat.S_ISREG(upload_stat.st_mode):
-        return None
+        return
     upload_size = upload_stat.st_size
     upload_digest = _sha256_file(upload_path)
 
@@ -187,16 +201,16 @@ def find_matching_upload_recording(
             if raw_audio.stat().st_size != upload_size:
                 continue
             if _sha256_file(raw_audio) == upload_digest:
-                return raw_audio.parent.parent.name
+                yield raw_audio.parent.parent.name
         except OSError:
             continue
-    return None
 
 
 __all__ = [
     "ALLOWED_UPLOAD_EXTENSIONS",
     "CaptureTimeInference",
     "find_matching_upload_recording",
+    "iter_matching_upload_recordings",
     "infer_captured_at",
     "infer_upload_capture_time",
     "normalize_plaud_captured_at",

@@ -63,8 +63,8 @@ from .ops import RecordingDeleteError, delete_recording_with_artifacts
 from .reaper import run_stuck_job_reaper_once
 from .uploads import (
     ALLOWED_UPLOAD_EXTENSIONS,
-    find_matching_upload_recording,
     infer_upload_capture_time,
+    iter_matching_upload_recordings,
     safe_filename,
     suffix_from_name,
     write_upload_to_path,
@@ -549,20 +549,22 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
             file.filename or "",
             upload_capture_timezone=_settings.upload_capture_tzinfo(),
         )
-        matched_recording_id = find_matching_upload_recording(
+        matched_recording_id = None
+        existing = None
+        for candidate_recording_id in iter_matching_upload_recordings(
             dest,
             settings=_settings,
-        )
-        if matched_recording_id is not None:
-            existing = get_recording(matched_recording_id, settings=_settings)
+        ):
+            existing = get_recording(candidate_recording_id, settings=_settings)
             if existing is None:
                 _logger.warning(
                     "duplicate upload matched raw audio for %s but no recording row exists; treating upload as new",
-                    matched_recording_id,
+                    candidate_recording_id,
                 )
-                matched_recording_id = None
-            else:
-                cleanup_uploaded_recording_dir = True
+                continue
+            matched_recording_id = candidate_recording_id
+            cleanup_uploaded_recording_dir = True
+            break
         if matched_recording_id is not None:
             _logger.info(
                 "re-upload detected for %s, clearing derived artifacts for full reprocess",
